@@ -8,8 +8,14 @@ from urllib.parse import unquote
 from markdown_it.token import Token
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import Markdown, MarkdownViewer
-from textual.widgets._markdown import MarkdownFence, MarkdownHeader, MarkdownParagraph
+from textual.css.query import NoMatches
+from textual.widgets import Markdown, MarkdownViewer, Tree
+from textual.widgets._markdown import (
+    MarkdownFence,
+    MarkdownHeader,
+    MarkdownParagraph,
+    MarkdownTableOfContents,
+)
 from textual_image.widget import Image
 
 from mdview.mermaid import MermaidRenderError, find_mmdc, render_mermaid
@@ -51,6 +57,7 @@ class MdViewerApp(App):
         Binding("p", "prev_heading", "Prev heading", show=True),
         Binding("t", "toggle_toc", "TOC", show=True),
         Binding("b,left", "go_back", "Back", show=True),
+        Binding("h,question_mark", "toggle_help", "Help", show=True),
     ]
 
     def __init__(self, md_path: Path) -> None:
@@ -242,9 +249,34 @@ class MdViewerApp(App):
     def action_scroll_end(self) -> None:
         self.query_one(MarkdownViewer).scroll_end(animate=False)
 
+    def action_toggle_help(self) -> None:
+        from textual.widgets import HelpPanel
+
+        existing = self.screen.query(HelpPanel)
+        if existing:
+            existing.remove()
+        else:
+            self.screen.mount(HelpPanel())
+
     def action_toggle_toc(self) -> None:
         viewer = self.query_one(MarkdownViewer)
         viewer.show_table_of_contents = not viewer.show_table_of_contents
+        if viewer.show_table_of_contents:
+            # Focus the TOC's inner Tree so j/k/↑/↓ navigate it immediately.
+            # call_after_refresh: the TOC widget mounts on the next layout pass.
+            self.call_after_refresh(self._focus_toc)
+        else:
+            viewer.document.focus()
+
+    def _focus_toc(self) -> None:
+        try:
+            toc = self.query_one(MarkdownTableOfContents)
+        except NoMatches:
+            return
+        try:
+            toc.query_one(Tree).focus()
+        except NoMatches:
+            return
 
     def action_next_heading(self) -> None:
         self._jump_heading(direction=1)
