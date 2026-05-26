@@ -1,4 +1,4 @@
-# md-tui-viewer サンプル
+# mdview サンプル
 
 `mdview` の表示確認用ドキュメント。すべての主要なmarkdown要素を含む。
 
