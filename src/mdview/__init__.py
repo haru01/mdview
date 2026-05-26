@@ -1,0 +1,1 @@
+"""Readable TUI markdown viewer."""

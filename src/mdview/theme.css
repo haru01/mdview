@@ -1,0 +1,109 @@
+Screen {
+    background: $surface;
+}
+
+MarkdownViewer {
+    background: $surface;
+}
+
+Markdown {
+    padding: 1 2;
+    background: $surface;
+}
+
+/* Headings: scale color and emphasis by level */
+MarkdownH1 {
+    color: $accent;
+    background: $boost;
+    text-style: bold;
+    border: none;
+    padding: 1 2;
+    margin: 1 0 1 0;
+    content-align: left middle;
+}
+
+MarkdownH2 {
+    color: $accent;
+    text-style: bold underline;
+    margin: 2 0 1 0;
+}
+
+MarkdownH3 {
+    color: $primary;
+    text-style: bold;
+    margin: 2 0 1 0;
+}
+
+MarkdownH4 {
+    color: $primary;
+    text-style: bold;
+    margin: 1 0;
+}
+
+MarkdownH5, MarkdownH6 {
+    color: $secondary;
+    text-style: bold;
+    margin: 1 0;
+}
+
+/* Paragraphs */
+MarkdownParagraph {
+    margin: 0 0 1 0;
+}
+
+/* Block quotes */
+MarkdownBlockQuote {
+    background: $boost;
+    border-left: thick $accent 50%;
+    padding: 0 1;
+    margin: 1 0;
+    color: $text-muted;
+}
+
+/* Code blocks: rely on Pygments via MarkdownFence defaults, just tighten spacing */
+MarkdownFence {
+    margin: 1 0;
+    max-height: initial;
+}
+
+/* Inline styles */
+MarkdownBlock > .code_inline {
+    background: $boost;
+    color: $warning;
+}
+
+MarkdownBlock > .em {
+    color: $secondary;
+    text-style: italic;
+}
+
+MarkdownBlock > .strong {
+    color: $accent;
+    text-style: bold;
+}
+
+/* Lists */
+MarkdownList {
+    margin: 0 0 1 0;
+}
+
+/* Horizontal rule */
+MarkdownHorizontalRule {
+    color: $primary;
+}
+
+/* Table of contents sidebar */
+MarkdownTableOfContents {
+    background: $panel;
+    width: 30%;
+    min-width: 20;
+    max-width: 50;
+}
+
+/* Image widget injected by mdview */
+.mdview-image {
+    margin: 1 0;
+    height: auto;
+    width: auto;
+    max-width: 100%;
+}
