@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import atexit
 import hashlib
 import tempfile
 from pathlib import Path
@@ -59,8 +58,11 @@ class MdViewerApp(App):
         self._md_path = md_path.resolve()
         self._md_dir = self._md_path.parent
         self._history: list[tuple[Path, float]] = []
+        # TemporaryDirectory has its own finalizer that runs at interpreter
+        # shutdown; no atexit.register needed. Registering here would pin the
+        # cleanup callback for the whole process even if .run() never fires,
+        # leaking the tempdir.
         self._tempdir = tempfile.TemporaryDirectory(prefix="mdview-")
-        atexit.register(self._tempdir.cleanup)
 
     def compose(self) -> ComposeResult:
         # open_links=False so we route anchors (#section) to goto_anchor
@@ -102,7 +104,9 @@ class MdViewerApp(App):
         if mmdc is None:
             return
         viewer = self.query_one(MarkdownViewer)
-        fences = [f for f in viewer.document.query(MarkdownFence) if f.lexer == "mermaid"]
+        fences = [
+            f for f in viewer.document.query(MarkdownFence) if (f.lexer or "").lower() == "mermaid"
+        ]
         for fence in fences:
             image_widget = self._render_mermaid_fence(fence.code, mmdc)
             if image_widget is None:
@@ -131,7 +135,10 @@ class MdViewerApp(App):
     def _build_image_widget(self, image_path: Path) -> Image | None:
         suffix = image_path.suffix.lower()
         if suffix == ".svg":
-            png_path = Path(self._tempdir.name) / (image_path.stem + ".png")
+            # Disambiguate two SVGs with the same basename in different dirs
+            # by hashing the resolved absolute path.
+            key = hashlib.sha1(str(image_path).encode("utf-8")).hexdigest()[:12]
+            png_path = Path(self._tempdir.name) / f"{image_path.stem}-{key}.png"
             target_width_px = max(400, (self.size.width or 80) * 16)
             rasterize_svg(image_path, png_path, width_px=target_width_px)
             return Image(png_path, classes="mdview-image")
@@ -142,7 +149,12 @@ class MdViewerApp(App):
     def on_markdown_link_clicked(self, event: Markdown.LinkClicked) -> None:
         href = event.href
         if href.startswith("#"):
-            event.markdown.goto_anchor(href[1:])
+            anchor = href[1:]
+            if anchor:
+                event.markdown.goto_anchor(anchor)
+            else:
+                # `[top](#)` convention — scroll to the top of the document.
+                self.query_one(MarkdownViewer).scroll_home(animate=False)
             return
         if href.startswith(("http://", "https://", "mailto:", "data:")):
             self.open_url(href)
@@ -174,16 +186,20 @@ class MdViewerApp(App):
 
     async def _navigate_to(self, path: Path, anchor: str) -> None:
         viewer = self.query_one(MarkdownViewer)
-        self._history.append((self._md_path, viewer.scroll_y))
-        await self._load_file(path, anchor)
+        # Capture pre-load state, but only commit it to history after load
+        # succeeds. Otherwise a failed/cancelled load leaves a phantom entry
+        # pointing at the file the user is still viewing.
+        prev = (self._md_path, viewer.scroll_y)
+        if await self._load_file(path, anchor):
+            self._history.append(prev)
 
-    async def _load_file(self, path: Path, anchor: str = "") -> None:
+    async def _load_file(self, path: Path, anchor: str = "") -> bool:
         viewer = self.query_one(MarkdownViewer)
         try:
             await viewer.document.load(path)
         except OSError as e:
             self.notify(f"failed to load {path}: {e}", severity="error")
-            return
+            return False
         self._md_path = path
         self._md_dir = path.parent
         self.title = path.name
@@ -193,6 +209,7 @@ class MdViewerApp(App):
             self.call_after_refresh(viewer.document.goto_anchor, anchor)
         else:
             viewer.scroll_home(animate=False)
+        return True
 
     def action_go_back(self) -> None:
         if not self._history:

@@ -29,9 +29,12 @@ def _fake_mmdc(tmp_path: Path, *, exit_code: int = 0, write_output: bool = True)
     png_file.write_bytes(png_bytes)
 
     script = tmp_path / "mmdc"
+    argv_log = tmp_path / "argv.log"
     body = textwrap.dedent(
         f"""\
         #!/usr/bin/env bash
+        # log argv so tests can assert what flags we received
+        printf '%s\\n' "$@" > "{argv_log}"
         # parse `-o <path>` out of the arguments
         out=""
         while [ "$#" -gt 0 ]; do
@@ -71,3 +74,22 @@ def test_render_mermaid_nonzero_exit_raises(tmp_path: Path) -> None:
 def test_render_mermaid_missing_binary_raises(tmp_path: Path) -> None:
     with pytest.raises(MermaidRenderError):
         render_mermaid("x", tmp_path / "x.svg", mmdc=str(tmp_path / "does-not-exist"))
+
+
+def test_render_mermaid_writes_png(tmp_path: Path) -> None:
+    """Production path uses PNG output (so flowchart-v2 foreignObject labels
+    survive). The PNG payload must be a real PNG, not the SVG fallback."""
+    mmdc = _fake_mmdc(tmp_path)
+    out = tmp_path / "diagram.png"
+    render_mermaid("flowchart LR\n  A --> B\n", out, mmdc=str(mmdc), width=1280)
+    assert out.exists()
+    assert out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_render_mermaid_passes_width_flag(tmp_path: Path) -> None:
+    mmdc = _fake_mmdc(tmp_path)
+    out = tmp_path / "diagram.png"
+    render_mermaid("flowchart LR\n  A --> B\n", out, mmdc=str(mmdc), width=2048)
+    argv = (tmp_path / "argv.log").read_text().splitlines()
+    assert "-w" in argv
+    assert argv[argv.index("-w") + 1] == "2048"

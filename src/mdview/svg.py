@@ -30,7 +30,7 @@ class SvgRenderError(RuntimeError):
 
 def rasterize_svg(src: Path, dst: Path, *, width_px: int) -> Path:
     if not src.exists():
-        raise FileNotFoundError(src)
+        raise SvgRenderError(f"svg source not found: {src}")
 
     _ensure_lib_search_path()
     try:
