@@ -204,6 +204,38 @@ def test_back_returns_to_previous_file() -> None:
     asyncio.run(driver())
 
 
+def test_stdin_content_loads_and_titles() -> None:
+    """Content passed in (as from piped stdin) renders and titles as (stdin)."""
+    import asyncio
+
+    from textual.widgets import MarkdownViewer
+
+    async def driver() -> None:
+        app = MdViewerApp(content="# Piped\n\nHello from stdin.")
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            assert app.title == "(stdin)"
+            assert app._md_dir == Path.cwd()
+            viewer = app.query_one(MarkdownViewer)
+            assert "Piped" in viewer.document.source
+
+    asyncio.run(driver())
+
+
+def test_stdin_base_dir_overrides_resolution_root(tmp_path: Path) -> None:
+    """base_dir sets where relative images/links resolve for stdin content."""
+    import asyncio
+
+    async def driver() -> None:
+        app = MdViewerApp(content="# x", base_dir=tmp_path)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            assert app._md_dir == tmp_path.resolve()
+
+    asyncio.run(driver())
+
+
 def test_mermaid_fence_replaced_when_mmdc_available(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

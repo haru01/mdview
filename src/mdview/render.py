@@ -19,4 +19,9 @@ def print_markdown(path: Path) -> None:
         except OSError as e:
             print(f"mdview: failed to read {path}: {e}", file=sys.stderr)
             return
+    print_markdown_text(text)
+
+
+def print_markdown_text(text: str) -> None:
+    """Render an in-memory markdown string to stdout (used for piped stdin)."""
     Console(force_terminal=False, soft_wrap=False).print(Markdown(text, code_theme="ansi_dark"))

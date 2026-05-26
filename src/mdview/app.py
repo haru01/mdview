@@ -60,16 +60,33 @@ class MdViewerApp(App):
         Binding("h,question_mark", "toggle_help", "Help", show=True),
     ]
 
-    def __init__(self, md_path: Path) -> None:
+    def __init__(
+        self,
+        md_path: Path | None = None,
+        *,
+        content: str | None = None,
+        base_dir: Path | None = None,
+    ) -> None:
         super().__init__()
-        self._md_path = md_path.resolve()
-        self._md_dir = self._md_path.parent
         self._history: list[tuple[Path, float]] = []
         # TemporaryDirectory has its own finalizer that runs at interpreter
         # shutdown; no atexit.register needed. Registering here would pin the
         # cleanup callback for the whole process even if .run() never fires,
         # leaking the tempdir.
         self._tempdir = tempfile.TemporaryDirectory(prefix="mdview-")
+        if content is not None:
+            # stdin has no source directory, so relative images/links resolve
+            # against base_dir (defaults to CWD). Stash the text in the tempdir
+            # so the rest of the pipeline keeps working off a real path.
+            stdin_file = Path(self._tempdir.name) / "stdin.md"
+            stdin_file.write_text(content, encoding="utf-8")
+            self._md_path = stdin_file
+            self._md_dir = (base_dir or Path.cwd()).resolve()
+            self._display_name = "(stdin)"
+        else:
+            self._md_path = md_path.resolve()
+            self._md_dir = self._md_path.parent
+            self._display_name = self._md_path.name
 
     def compose(self) -> ComposeResult:
         # open_links=False so we route anchors (#section) to goto_anchor
@@ -78,7 +95,7 @@ class MdViewerApp(App):
 
     async def on_mount(self) -> None:
         viewer = self.query_one(MarkdownViewer)
-        self.title = self._md_path.name
+        self.title = self._display_name
         try:
             await viewer.document.load(self._md_path)
         except OSError as e:
