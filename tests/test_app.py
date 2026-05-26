@@ -236,6 +236,62 @@ def test_stdin_base_dir_overrides_resolution_root(tmp_path: Path) -> None:
     asyncio.run(driver())
 
 
+def test_ask_ai_without_selection_notifies(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pressing `a` with no selection warns instead of opening the modal."""
+    import asyncio
+
+    from mdview.ask_ai import AskAiScreen
+
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("a")
+            await pilot.pause()
+            assert not isinstance(app.screen, AskAiScreen), "no selection should not open the modal"
+
+    asyncio.run(driver())
+
+
+def test_ask_ai_opens_modal_with_selection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With text selected and claude on PATH, `a` opens the AskAiScreen modal."""
+    import asyncio
+    import os
+
+    from tests.test_ai import _fake_claude
+    from mdview.ask_ai import AskAiScreen
+
+    claude = _fake_claude(tmp_path)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    import shutil
+
+    shutil.copy(claude, bindir / "claude")
+    (bindir / "claude").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            # Simulate a selection by populating the screen's selection map via
+            # select-all, which the framework supports.
+            app.screen.text_select_all()
+            await pilot.pause()
+            assert app.screen.get_selected_text(), "select-all should yield text"
+            await pilot.press("a")
+            await pilot.pause()
+            assert isinstance(app.screen, AskAiScreen), "selection should open the modal"
+
+    asyncio.run(driver())
+
+
 def test_mermaid_fence_replaced_when_mmdc_available(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

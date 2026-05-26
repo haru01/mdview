@@ -18,6 +18,8 @@ from textual.widgets._markdown import (
 )
 from textual_image.widget import Image
 
+from mdview.ai import find_claude, repo_root_for
+from mdview.ask_ai import AskAiScreen
 from mdview.mermaid import MermaidRenderError, find_mmdc, render_mermaid
 from mdview.svg import SvgRenderError, rasterize_svg
 
@@ -57,6 +59,7 @@ class MdViewerApp(App):
         Binding("p", "prev_heading", "Prev heading", show=True),
         Binding("t", "toggle_toc", "TOC", show=True),
         Binding("b,left", "go_back", "Back", show=True),
+        Binding("a", "ask_ai", "Ask AI", show=True),
         Binding("h,question_mark", "toggle_help", "Help", show=True),
     ]
 
@@ -274,6 +277,19 @@ class MdViewerApp(App):
             existing.remove()
         else:
             self.screen.mount(HelpPanel())
+
+    def action_ask_ai(self) -> None:
+        selection = self.screen.get_selected_text()
+        if not selection or not selection.strip():
+            self.notify("質問するテキストを選択してください", severity="warning")
+            return
+        claude = find_claude()
+        if claude is None:
+            self.notify("claude CLI が見つかりません", severity="error")
+            return
+        self.push_screen(
+            AskAiScreen(selection, claude=claude, cwd=repo_root_for(self._md_path))
+        )
 
     def action_toggle_toc(self) -> None:
         viewer = self.query_one(MarkdownViewer)

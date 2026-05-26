@@ -154,3 +154,38 @@ MarkdownTableOfContents {
     width: auto;
     max-width: 100%;
 }
+
+/* ===== Ask AI modal ===== */
+
+AskAiScreen {
+    align: center middle;
+    background: $surface 60%;
+}
+
+#ask-ai-dialog {
+    width: 80%;
+    max-width: 100;
+    height: auto;
+    max-height: 80%;
+    background: $panel;
+    border: round $accent;
+    padding: 1 2;
+}
+
+#ask-ai-context {
+    color: $text-muted;
+    border-bottom: solid $primary 40%;
+    padding: 0 0 1 0;
+    margin: 0 0 1 0;
+}
+
+#ask-ai-loading {
+    height: 1;
+    margin: 1 0;
+}
+
+#ask-ai-answer {
+    height: auto;
+    max-height: 24;
+    margin: 1 0 0 0;
+}
