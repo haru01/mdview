@@ -11,47 +11,60 @@ Markdown {
     background: $surface;
 }
 
-/* Headings: scale color and emphasis by level */
+/* ===== Headings =====
+ * Material-style hierarchy: H1–H3 are first-class section markers, H4–H6
+ * gradually de-emphasize so deep nesting still reads as "structure" but
+ * doesn't shout. Rules under H1–H3 give a clear visual landing spot.
+ */
+
 MarkdownH1 {
     color: $accent;
     background: $boost;
     text-style: bold;
-    border: none;
     padding: 1 2;
-    margin: 1 0 1 0;
+    margin: 2 0 1 0;
+    border-bottom: heavy $accent;
     content-align: left middle;
 }
 
 MarkdownH2 {
     color: $accent;
-    text-style: bold underline;
+    text-style: bold;
+    padding: 0 0 0 0;
     margin: 2 0 1 0;
+    border-bottom: heavy $accent 60%;
 }
 
 MarkdownH3 {
     color: $primary;
     text-style: bold;
     margin: 2 0 1 0;
+    border-bottom: solid $primary 40%;
 }
 
 MarkdownH4 {
-    color: $primary;
+    color: $foreground;
     text-style: bold;
     margin: 1 0;
 }
 
-MarkdownH5, MarkdownH6 {
-    color: $secondary;
+MarkdownH5 {
+    color: $text-muted;
     text-style: bold;
     margin: 1 0;
 }
 
-/* Paragraphs */
+MarkdownH6 {
+    color: $text-disabled;
+    margin: 1 0;
+}
+
+/* ===== Body ===== */
+
 MarkdownParagraph {
     margin: 0 0 1 0;
 }
 
-/* Block quotes */
 MarkdownBlockQuote {
     background: $boost;
     border-left: thick $accent 50%;
@@ -60,13 +73,11 @@ MarkdownBlockQuote {
     color: $text-muted;
 }
 
-/* Code blocks: rely on Pygments via MarkdownFence defaults, just tighten spacing */
 MarkdownFence {
     margin: 1 0;
     max-height: initial;
 }
 
-/* Inline styles */
 MarkdownBlock > .code_inline {
     background: $boost;
     color: $warning;
@@ -82,17 +93,54 @@ MarkdownBlock > .strong {
     text-style: bold;
 }
 
-/* Lists */
 MarkdownList {
     margin: 0 0 1 0;
 }
 
-/* Horizontal rule */
 MarkdownHorizontalRule {
     color: $primary;
 }
 
-/* Table of contents sidebar */
+/* ===== Tables =====
+ * Header row stands out with $boost background + accent bold; body rows get
+ * subtle zebra striping (alternating $surface / $boost-lighten-1 via 30%
+ * tint) so multi-row tables are easy to scan.
+ *
+ * Textual lacks :nth-of-type for children, so striping is enumerated via
+ * .row1/.row3/... classes from MarkdownTableContent. Covers up to ~10 rows
+ * which is the common case for documentation tables; longer tables fall
+ * back to the keyline grid lines, which are still readable.
+ */
+
+MarkdownTable {
+    margin: 1 0;
+}
+
+MarkdownTableContent {
+    keyline: thin $primary 30%;
+}
+
+MarkdownTableContent > .header {
+    background: $boost;
+    color: $accent;
+    text-style: bold;
+    padding: 0 1;
+}
+
+MarkdownTableContent > .cell {
+    padding: 0 1;
+}
+
+MarkdownTableContent > .cell.row2,
+MarkdownTableContent > .cell.row4,
+MarkdownTableContent > .cell.row6,
+MarkdownTableContent > .cell.row8,
+MarkdownTableContent > .cell.row10 {
+    background: $boost 40%;
+}
+
+/* ===== Misc ===== */
+
 MarkdownTableOfContents {
     background: $panel;
     width: 30%;
@@ -100,7 +148,6 @@ MarkdownTableOfContents {
     max-width: 50;
 }
 
-/* Image widget injected by mdview */
 .mdview-image {
     margin: 1 0;
     height: auto;
