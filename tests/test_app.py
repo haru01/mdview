@@ -35,6 +35,88 @@ def test_sample_svg_paragraph_is_replaced_with_image_widget() -> None:
     asyncio.run(driver())
 
 
+def test_all_headings_render_in_claude_orange() -> None:
+    """H1–H6 share a single orange hue (#d97757, Claude's mascot color)."""
+    import asyncio
+
+    from textual.widgets._markdown import (
+        MarkdownH1,
+        MarkdownH2,
+        MarkdownH3,
+        MarkdownH4,
+        MarkdownH5,
+        MarkdownH6,
+    )
+
+    md = FIXTURES / "sample.md"
+    orange_rgb = (217, 119, 87)  # #d97757
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            for heading_cls in (
+                MarkdownH1,
+                MarkdownH2,
+                MarkdownH3,
+                MarkdownH4,
+                MarkdownH5,
+                MarkdownH6,
+            ):
+                widgets = list(app.query(heading_cls))
+                assert widgets, f"sample should contain a {heading_cls.__name__}"
+                color = widgets[0].styles.color
+                assert (color.r, color.g, color.b) == orange_rgb, (
+                    f"{heading_cls.__name__} should be orange, got {color}"
+                )
+
+    asyncio.run(driver())
+
+
+def test_accent_palette_is_orange_and_green() -> None:
+    """3-color scheme: orange marks structure (quote bar), green marks inline emphasis."""
+    import asyncio
+
+    from textual.widgets._markdown import (
+        MarkdownBlockQuote,
+        MarkdownHorizontalRule,
+        MarkdownParagraph,
+        MarkdownTableContent,
+    )
+
+    md = FIXTURES / "sample.md"
+    orange = (217, 119, 87)  # #d97757
+    green = (78, 191, 113)  # #4EBF71
+
+    def rgb(color):  # noqa: ANN001, ANN202
+        return (color.r, color.g, color.b)
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+
+            # Inline emphasis (bold / italic / inline code) is green so the body
+            # text doesn't read as a wall of orange.
+            para = app.query(MarkdownParagraph).first()
+            assert rgb(para.get_component_styles("strong").color) == green
+            assert rgb(para.get_component_styles("code_inline").color) == green
+            assert rgb(para.get_component_styles("em").color) == green
+
+            hr = app.query(MarkdownHorizontalRule).first()
+            assert rgb(hr.styles.color) == green
+
+            keyline = app.query(MarkdownTableContent).first().styles.keyline
+            assert rgb(keyline[1]) == green
+
+            border = app.query(MarkdownBlockQuote).first().styles.border_left
+            assert rgb(border[1]) == orange
+
+    asyncio.run(driver())
+
+
 def test_n_and_p_navigate_between_headings() -> None:
     import asyncio
 
@@ -288,6 +370,11 @@ def test_ask_ai_opens_modal_with_selection(tmp_path: Path, monkeypatch: pytest.M
             await pilot.press("a")
             await pilot.pause()
             assert isinstance(app.screen, AskAiScreen), "selection should open the modal"
+
+            from textual.widgets import Input
+
+            input_widget = app.screen.query_one("#ask-ai-input", Input)
+            assert input_widget.value == "わかるように教えて", "input should pre-fill a default question"
 
     asyncio.run(driver())
 

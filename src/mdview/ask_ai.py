@@ -26,7 +26,11 @@ class AskAiScreen(ModalScreen):
     def compose(self) -> ComposeResult:
         with Vertical(id="ask-ai-dialog"):
             yield Static(self._selection_preview(), id="ask-ai-context")
-            yield Input(placeholder="この抜粋について質問… (Enterで送信, Escで閉じる)", id="ask-ai-input")
+            yield Input(
+                value="わかるように教えて",
+                placeholder="この抜粋について質問… (Enterで送信, Escで閉じる)",
+                id="ask-ai-input",
+            )
             loading = LoadingIndicator(id="ask-ai-loading")
             loading.display = False
             yield loading

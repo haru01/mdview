@@ -26,6 +26,13 @@ uv tool install .
 uv tool install --editable .
 ```
 
+既にインストール済みで入れ直したいときは `--force` で上書きします。コード変更を確実に反映するには `--reinstall`（キャッシュを使わず再ビルド）も併用します:
+
+```sh
+uv tool install --force .              # 上書き再インストール
+uv tool install --force --reinstall .  # 再ビルドして反映
+```
+
 インストールせず都度実行する場合（プロジェクトディレクトリ内）:
 
 ```sh

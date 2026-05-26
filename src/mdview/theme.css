@@ -1,3 +1,11 @@
+/* ===== Palette =====
+ * The whole theme is built from three colors, mirroring Claude Code's look:
+ * coral (the brand/mascot accent), green (the secondary accent), and the
+ * neutral foreground/greys that carry body text. No blues, no amber.
+ */
+$orange: #d97757;  /* Claude's coral — primary accent */
+$green: #4ebf71;   /* secondary accent (replaces the old blue) */
+
 Screen {
     background: $surface;
 }
@@ -12,50 +20,52 @@ Markdown {
 }
 
 /* ===== Headings =====
- * Material-style hierarchy: H1–H3 are first-class section markers, H4–H6
- * gradually de-emphasize so deep nesting still reads as "structure" but
- * doesn't shout. Rules under H1–H3 give a clear visual landing spot.
+ * Every level wears the same $orange (Claude's mascot color), so the heading
+ * hue is unified across H1–H6. Hierarchy is carried by structure, not color:
+ * H1–H3 keep their borders/background as section landings, and the deepest
+ * levels (H5–H6) dim the shared orange so nesting still reads as de-emphasized
+ * without switching hue.
  */
 
 MarkdownH1 {
-    color: $accent;
+    color: $orange;
     background: $boost;
     text-style: bold;
     padding: 1 2;
     margin: 2 0 1 0;
-    border-bottom: heavy $accent;
+    border-bottom: heavy $orange;
     content-align: left middle;
 }
 
 MarkdownH2 {
-    color: $accent;
+    color: $orange;
     text-style: bold;
     padding: 0 0 0 0;
     margin: 2 0 1 0;
-    border-bottom: heavy $accent 60%;
+    border-bottom: heavy $orange 60%;
 }
 
 MarkdownH3 {
-    color: $primary;
+    color: $orange;
     text-style: bold;
     margin: 2 0 1 0;
-    border-bottom: solid $primary 40%;
+    border-bottom: solid $orange 40%;
 }
 
 MarkdownH4 {
-    color: $foreground;
+    color: $orange;
     text-style: bold;
     margin: 1 0;
 }
 
 MarkdownH5 {
-    color: $text-muted;
+    color: $orange 75%;
     text-style: bold;
     margin: 1 0;
 }
 
 MarkdownH6 {
-    color: $text-disabled;
+    color: $orange 60%;
     margin: 1 0;
 }
 
@@ -67,7 +77,7 @@ MarkdownParagraph {
 
 MarkdownBlockQuote {
     background: $boost;
-    border-left: thick $accent 50%;
+    border-left: thick $orange 50%;
     padding: 0 1;
     margin: 1 0;
     color: $text-muted;
@@ -78,18 +88,20 @@ MarkdownFence {
     max-height: initial;
 }
 
+/* Inline emphasis (bold / italic / inline code) is green; orange is reserved
+ * for headings and block structure so body text isn't dominated by orange. */
 MarkdownBlock > .code_inline {
     background: $boost;
-    color: $warning;
+    color: $green;
 }
 
 MarkdownBlock > .em {
-    color: $secondary;
+    color: $green;
     text-style: italic;
 }
 
 MarkdownBlock > .strong {
-    color: $accent;
+    color: $green;
     text-style: bold;
 }
 
@@ -98,7 +110,7 @@ MarkdownList {
 }
 
 MarkdownHorizontalRule {
-    color: $primary;
+    color: $green;
 }
 
 /* ===== Tables =====
@@ -117,12 +129,12 @@ MarkdownTable {
 }
 
 MarkdownTableContent {
-    keyline: thin $primary 30%;
+    keyline: thin $green 30%;
 }
 
 MarkdownTableContent > .header {
     background: $boost;
-    color: $accent;
+    color: $orange;
     text-style: bold;
     padding: 0 1;
 }
@@ -168,13 +180,13 @@ AskAiScreen {
     height: auto;
     max-height: 80%;
     background: $panel;
-    border: round $accent;
+    border: round $orange;
     padding: 1 2;
 }
 
 #ask-ai-context {
     color: $text-muted;
-    border-bottom: solid $primary 40%;
+    border-bottom: solid $green 40%;
     padding: 0 0 1 0;
     margin: 0 0 1 0;
 }
