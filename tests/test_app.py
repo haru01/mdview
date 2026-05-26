@@ -379,6 +379,69 @@ def test_ask_ai_opens_modal_with_selection(tmp_path: Path, monkeypatch: pytest.M
     asyncio.run(driver())
 
 
+def test_diff_fences_colour_added_and_removed_lines() -> None:
+    """A piped diff renders with +/- lines coloured green/red in the TUI."""
+    import asyncio
+
+    from textual.widgets._markdown import MarkdownFence
+
+    from mdview.diff import diff_to_markdown
+
+    raw = (
+        "diff --git a/x.py b/x.py\n"
+        "--- a/x.py\n"
+        "+++ b/x.py\n"
+        "@@ -1,2 +1,2 @@\n"
+        "-old\n"
+        "+new\n"
+    )
+
+    async def driver() -> None:
+        app = MdViewerApp(content=diff_to_markdown(raw))
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            fences = [f for f in app.query(MarkdownFence) if (f.lexer or "").lower() == "diff"]
+            assert fences, "expected a diff fence"
+            styles = {span.style for span in fences[0]._content.spans}
+            assert "$text-success" in styles, "added line should be green"
+            assert "$text-error" in styles, "removed line should be red"
+
+    asyncio.run(driver())
+
+
+def test_n_p_navigate_diff_hunk_and_file_headings() -> None:
+    """n jumps between the `##` file / `### @@` hunk headings of a rendered diff."""
+    import asyncio
+
+    from textual.widgets import MarkdownViewer
+
+    from mdview.diff import diff_to_markdown
+
+    raw = "".join(
+        f"diff --git a/file{f}.txt b/file{f}.txt\n"
+        f"--- a/file{f}.txt\n"
+        f"+++ b/file{f}.txt\n"
+        "@@ -1,20 +1,20 @@\n"
+        + "".join(f" ctx {f}-{k}\n" for k in range(20))
+        + f"-old{f}\n+new{f}\n"
+        for f in range(3)
+    )
+
+    async def driver() -> None:
+        app = MdViewerApp(content=diff_to_markdown(raw))
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            viewer = app.query_one(MarkdownViewer)
+            start = viewer.scroll_y
+            await pilot.press("n")
+            await pilot.pause()
+            assert viewer.scroll_y > start, "`n` should jump to the next diff heading"
+
+    asyncio.run(driver())
+
+
 def test_mermaid_fence_replaced_when_mmdc_available(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

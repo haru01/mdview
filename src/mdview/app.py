@@ -6,9 +6,11 @@ from pathlib import Path
 from urllib.parse import unquote
 
 from markdown_it.token import Token
+from pygments.token import Generic
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.css.query import NoMatches
+from textual.highlight import HighlightTheme, highlight
 from textual.widgets import Markdown, MarkdownViewer, Tree
 from textual.widgets._markdown import (
     MarkdownFence,
@@ -26,6 +28,21 @@ from mdview.svg import SvgRenderError, rasterize_svg
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 _MARKDOWN_EXTS = {".md", ".markdown", ".mdown", ".mkd"}
+
+
+class _DiffHighlightTheme(HighlightTheme):
+    """Syntax theme that colours diff added/removed lines.
+
+    Textual's base theme leaves ``Generic.Inserted``/``Generic.Deleted``
+    unstyled, so a ```diff fence shows +/- lines in the default colour. We map
+    them to the semantic success/error colours so diffs read like a diff.
+    """
+
+    STYLES = {
+        **HighlightTheme.STYLES,
+        Generic.Inserted: "$text-success",
+        Generic.Deleted: "$text-error",
+    }
 
 
 class _MdViewer(MarkdownViewer):
@@ -106,6 +123,20 @@ class MdViewerApp(App):
             return
         await self._inject_images()
         await self._inject_mermaid()
+        self._recolor_diff_fences()
+
+    def _recolor_diff_fences(self) -> None:
+        """Re-highlight ```diff fences with a theme that colours +/- lines.
+
+        cli.py rewrites a piped/loaded diff into Markdown with ```diff fences;
+        here we restyle them since Textual's default theme leaves +/- uncoloured.
+        """
+        viewer = self.query_one(MarkdownViewer)
+        for fence in viewer.document.query(MarkdownFence):
+            if (fence.lexer or "").lower() == "diff":
+                fence.set_content(
+                    highlight(fence.code, language="diff", theme=_DiffHighlightTheme)
+                )
 
     async def _inject_images(self) -> None:
         viewer = self.query_one(MarkdownViewer)
@@ -232,6 +263,7 @@ class MdViewerApp(App):
         self.title = path.name
         await self._inject_images()
         await self._inject_mermaid()
+        self._recolor_diff_fences()
         if anchor:
             self.call_after_refresh(viewer.document.goto_anchor, anchor)
         else:
