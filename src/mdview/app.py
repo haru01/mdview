@@ -18,7 +18,7 @@ from textual.widgets._markdown import (
 )
 from textual_image.widget import Image
 
-from mdview.ai import find_claude, repo_root_for
+from mdview.ai import find_claude
 from mdview.ask_ai import AskAiScreen
 from mdview.mermaid import MermaidRenderError, find_mmdc, render_mermaid
 from mdview.svg import SvgRenderError, rasterize_svg
@@ -287,8 +287,9 @@ class MdViewerApp(App):
         if claude is None:
             self.notify("claude CLI が見つかりません", severity="error")
             return
+        document = self.query_one(MarkdownViewer).document.source
         self.push_screen(
-            AskAiScreen(selection, claude=claude, cwd=repo_root_for(self._md_path))
+            AskAiScreen(selection, document, claude=claude, cwd=self._md_dir)
         )
 
     def action_toggle_toc(self) -> None:

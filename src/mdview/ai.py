@@ -1,8 +1,8 @@
-"""Ask Claude Code about selected text, in the document's repo context.
+"""Ask Claude Code about selected text, in the open document's context.
 
 Isolated from the TUI so the subprocess logic can be unit tested without textual.
-Running the CLI with cwd set to the document's repository lets Claude read the
-surrounding project files when answering, so questions are grounded in that repo.
+The open document's full text is embedded in the prompt so answers are grounded
+in the file being viewed rather than the surrounding repository.
 """
 
 from __future__ import annotations
@@ -21,23 +21,11 @@ def find_claude() -> str | None:
     return shutil.which("claude")
 
 
-def repo_root_for(path: Path) -> Path:
-    """Best-effort repo root for `path`: nearest ancestor holding `.git`, else its dir.
-
-    This is the cwd handed to the CLI so it sees the document's project as context.
-    """
-    resolved = path.resolve()
-    start = resolved if resolved.is_dir() else resolved.parent
-    for parent in (start, *start.parents):
-        if (parent / ".git").exists():
-            return parent
-    return start
-
-
-def build_prompt(selection: str, question: str) -> str:
+def build_prompt(selection: str, question: str, document: str) -> str:
     return (
-        "以下はユーザーが閲覧中のMarkdownから選択した抜粋です。"
-        "このリポジトリの文脈を踏まえて、簡潔に日本語で質問に答えてください。\n\n"
+        "以下は現在開いているMarkdownドキュメントの全文と、その中からユーザーが選択した抜粋です。"
+        "このドキュメントの内容を文脈として、簡潔に日本語で質問に答えてください。\n\n"
+        f"# ドキュメント全文\n{document}\n\n"
         f"# 選択された抜粋\n{selection}\n\n"
         f"# 質問\n{question}\n"
     )
@@ -46,6 +34,7 @@ def build_prompt(selection: str, question: str) -> str:
 async def ask_claude(
     selection: str,
     question: str,
+    document: str,
     *,
     claude: str,
     cwd: Path,
@@ -57,7 +46,7 @@ async def ask_claude(
     interpreted as shell syntax. Raises AiQueryError on missing binary, timeout,
     non-zero exit, or empty output.
     """
-    prompt = build_prompt(selection, question)
+    prompt = build_prompt(selection, question, document)
     try:
         proc = await asyncio.create_subprocess_exec(
             claude,

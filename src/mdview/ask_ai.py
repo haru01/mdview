@@ -16,9 +16,10 @@ from mdview.ai import AiQueryError, ask_claude
 class AskAiScreen(ModalScreen):
     BINDINGS = [("escape", "dismiss", "Close")]
 
-    def __init__(self, selection: str, *, claude: str, cwd: Path) -> None:
+    def __init__(self, selection: str, document: str, *, claude: str, cwd: Path) -> None:
         super().__init__()
         self._selection = selection
+        self._document = document
         self._claude = claude
         self._cwd = cwd
 
@@ -62,6 +63,7 @@ class AskAiScreen(ModalScreen):
             result = await ask_claude(
                 self._selection,
                 question,
+                self._document,
                 claude=self._claude,
                 cwd=self._cwd,
             )
