@@ -32,7 +32,7 @@ MarkdownH1 {
     background: $boost;
     text-style: bold;
     padding: 1 2;
-    margin: 2 0 1 0;
+    margin: 1 0 1 0;
     border-bottom: heavy $orange;
     content-align: left middle;
 }
@@ -41,14 +41,14 @@ MarkdownH2 {
     color: $orange;
     text-style: bold;
     padding: 0 0 0 0;
-    margin: 2 0 1 0;
+    margin: 1 0 1 0;
     border-bottom: heavy $orange 60%;
 }
 
 MarkdownH3 {
     color: $orange;
     text-style: bold;
-    margin: 2 0 1 0;
+    margin: 1 0 1 0;
     border-bottom: solid $orange 40%;
 }
 
@@ -107,6 +107,12 @@ MarkdownBlock > .strong {
 
 MarkdownList {
     margin: 0 0 1 0;
+}
+
+/* Tighten list items: the per-paragraph bottom margin above would otherwise
+ * double-space bullets. Spacing is kept only after the whole list. */
+MarkdownList MarkdownParagraph {
+    margin: 0;
 }
 
 MarkdownHorizontalRule {
