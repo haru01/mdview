@@ -850,3 +850,126 @@ def test_mermaid_fence_replaced_when_mmdc_available(
 
     _ = textwrap  # silence unused import; kept for clarity
     asyncio.run(driver())
+
+
+def test_expand_and_shrink_selection_with_keyboard() -> None:
+    """`v` grows the selection along the structure; `V` shrinks it back to nothing."""
+    import asyncio
+
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+
+            # Grow: repeated `v` expands monotonically up to the whole document.
+            texts: list[str] = []
+            for _ in range(5):
+                await pilot.press("v")
+                await pilot.pause()
+                texts.append(app.screen.get_selected_text() or "")
+
+            assert texts[0], "first `v` should select a block"
+            assert all(len(b) >= len(a) for a, b in zip(texts, texts[1:])), texts
+            assert len(texts[-1]) > len(texts[0]), "selection should grow"
+            assert texts[0].strip() in texts[-1], "smaller selection nested in larger"
+            assert "mdview サンプル" in texts[-1] and "これでサンプルは終わり" in texts[-1], (
+                "largest selection should be the whole document"
+            )
+
+            # Shrink: `V` walks back down and eventually clears the selection.
+            await pilot.press("V")
+            await pilot.pause()
+            assert len(app.screen.get_selected_text() or "") < len(texts[-1])
+
+            for _ in range(5):
+                await pilot.press("V")
+                await pilot.pause()
+            assert not (app.screen.get_selected_text() or ""), "shrinking past the block clears"
+
+    asyncio.run(driver())
+
+
+def test_expand_selection_then_ask_ai_uses_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A keyboard-expanded selection feeds Ask AI just like a mouse selection."""
+    import asyncio
+    import os
+    import shutil
+
+    from tests.test_ai import _fake_claude
+    from mdview.ask_ai import AskAiScreen
+
+    claude = _fake_claude(tmp_path)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    shutil.copy(claude, bindir / "claude")
+    (bindir / "claude").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("v")
+            await pilot.pause()
+            assert app.screen.get_selected_text(), "`v` should select a block"
+            await pilot.press("h")
+            await pilot.pause()
+            assert isinstance(app.screen, AskAiScreen), "selection should open Ask AI"
+
+    asyncio.run(driver())
+
+
+def test_mouse_clicks_expand_then_reset_on_new_block() -> None:
+    """Clicking a block selects it; clicking it again expands; a new block resets."""
+    import asyncio
+
+    from textual.widgets import MarkdownViewer
+    from textual.widgets._markdown import MarkdownHeader, MarkdownParagraph
+
+    md = FIXTURES / "sample.md"
+
+    def para(doc, text):
+        return next(p for p in doc.query(MarkdownParagraph) if text in str(p._render()))
+
+    def heading(doc, text):
+        return next(h for h in doc.query(MarkdownHeader) if text in str(h._render()))
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            doc = app.query_one(MarkdownViewer).document
+
+            target = para(doc, "これは普通の段落")
+            target.scroll_visible(animate=False)
+            await pilot.pause()
+
+            await pilot.click(target)
+            await pilot.pause()
+            first = app.screen.get_selected_text() or ""
+            assert "太字" in first and "段落と強調" not in first, first
+
+            await pilot.click(target)
+            await pilot.pause()
+            second = app.screen.get_selected_text() or ""
+            assert "段落と強調" in second and len(second) > len(first), second
+
+            # Clicking a different block restarts the ladder at that block.
+            other = heading(doc, "mdview サンプル")
+            other.scroll_visible(animate=False)
+            await pilot.pause()
+            await pilot.click(other)
+            await pilot.pause()
+            third = app.screen.get_selected_text() or ""
+            assert third.strip() == "mdview サンプル", third
+
+    asyncio.run(driver())

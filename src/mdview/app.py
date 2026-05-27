@@ -7,10 +7,13 @@ from urllib.parse import unquote
 
 from markdown_it.token import Token
 from pygments.token import Generic
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.css.query import NoMatches
 from textual.highlight import HighlightTheme, highlight
+from textual.selection import SELECT_ALL, Selection
+from textual.widget import Widget
 from textual.widgets import Markdown, MarkdownViewer, Tree
 from textual.widgets._markdown import (
     MarkdownFence,
@@ -24,6 +27,7 @@ from mdview.ai import find_claude
 from mdview.ask_ai import AskAiScreen
 from mdview.image_zoom import ZoomableImage
 from mdview.mermaid import MermaidRenderError, find_mmdc, render_mermaid
+from mdview.selection import ATOMIC_BLOCKS, build_scopes, find_leaf_block
 from mdview.svg import SvgRenderError, rasterize_svg
 
 
@@ -77,6 +81,8 @@ class MdViewerApp(App):
         Binding("p", "prev_heading", "Prev heading", show=True),
         Binding("t", "toggle_toc", "TOC", show=True),
         Binding("b,left", "go_back", "Back", show=True),
+        Binding("v", "expand_selection", "Expand sel", show=True),
+        Binding("V", "shrink_selection", "Shrink sel", show=False),
         Binding("h", "ask_ai", "Ask AI", show=True),
         Binding("question_mark", "toggle_help", "Help", show=True),
     ]
@@ -90,6 +96,12 @@ class MdViewerApp(App):
     ) -> None:
         super().__init__()
         self._history: list[tuple[Path, float]] = []
+        # Semantic-selection ladder state (see mdview.selection). `_sel_scopes`
+        # is the expansion ladder for the current anchor; `_sel_index` is the
+        # active rung. All None/0 means no active semantic selection.
+        self._sel_anchor: Widget | None = None
+        self._sel_scopes: list[list[Widget]] | None = None
+        self._sel_index: int = 0
         # TemporaryDirectory has its own finalizer that runs at interpreter
         # shutdown; no atexit.register needed. Registering here would pin the
         # cleanup callback for the whole process even if .run() never fires,
@@ -373,6 +385,77 @@ class MdViewerApp(App):
                 (y for y in reversed(positions) if y < current - threshold), positions[0]
             )
         viewer.scroll_to(y=target_y, animate=False)
+
+    def on_click(self, event: events.Click) -> None:
+        """Mouse-driven semantic selection.
+
+        The first click on a block selects it; clicking the same block again
+        expands one rung along the Markdown structure. Clicking a different
+        block restarts the ladder there. (A stationary click clears any drag
+        selection in the framework's MouseUp handler first; we then set ours.)
+        """
+        leaf = find_leaf_block(event.widget)
+        if leaf is None:
+            return
+        if self._sel_scopes is not None and leaf is self._sel_anchor:
+            self._sel_index = min(self._sel_index + 1, len(self._sel_scopes) - 1)
+        else:
+            self._start_selection(leaf)
+        self._apply_scope(self._sel_scopes[self._sel_index])
+
+    def action_expand_selection(self) -> None:
+        """Keyboard expand: grow one rung, starting at the top visible block."""
+        if self._sel_scopes is not None:
+            self._sel_index = min(self._sel_index + 1, len(self._sel_scopes) - 1)
+        else:
+            leaf = self._first_visible_block()
+            if leaf is None:
+                return
+            self._start_selection(leaf)
+        self._apply_scope(self._sel_scopes[self._sel_index])
+
+    def action_shrink_selection(self) -> None:
+        """Keyboard shrink: go down one rung, or clear at the smallest block."""
+        if self._sel_scopes is None:
+            return
+        if self._sel_index > 0:
+            self._sel_index -= 1
+            self._apply_scope(self._sel_scopes[self._sel_index])
+        else:
+            self.screen.clear_selection()
+            self._reset_selection_state()
+
+    def _start_selection(self, leaf: Widget) -> None:
+        document = self.query_one(MarkdownViewer).document
+        self._sel_scopes = build_scopes(leaf, document)
+        self._sel_index = 0
+        self._sel_anchor = leaf
+
+    def _reset_selection_state(self) -> None:
+        self._sel_anchor = None
+        self._sel_scopes = None
+        self._sel_index = 0
+
+    def _apply_scope(self, roots: list[Widget]) -> None:
+        """Select each root widget and all of its descendants, in document order."""
+        selections: dict[Widget, Selection] = {}
+        for root in roots:
+            selections[root] = SELECT_ALL
+            for descendant in root.query("*"):
+                selections[descendant] = SELECT_ALL
+        self.screen.selections = selections
+
+    def _first_visible_block(self) -> Widget | None:
+        """The first atomic Markdown block overlapping the viewer's viewport."""
+        viewer = self.query_one(MarkdownViewer)
+        top = viewer.region.y
+        bottom = viewer.region.bottom
+        for node in viewer.document.query("*"):
+            if isinstance(node, ATOMIC_BLOCKS):
+                region = node.region
+                if region.area and region.bottom > top and region.y < bottom:
+                    return node
+        return None
 
 
 def _paragraph_image_src(paragraph: MarkdownParagraph) -> str | None:
