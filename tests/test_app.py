@@ -374,7 +374,182 @@ def test_ask_ai_opens_modal_with_selection(tmp_path: Path, monkeypatch: pytest.M
             from textual.widgets import Input
 
             input_widget = app.screen.query_one("#ask-ai-input", Input)
-            assert input_widget.value == "わかるように教えて", "input should pre-fill a default question"
+            assert input_widget.value == "SVG図解で解説して", "input should pre-fill a default question"
+
+    asyncio.run(driver())
+
+
+def _claude_on_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, stdout: str) -> None:
+    """Put a fake `claude` that replies with `stdout` on PATH."""
+    import os
+    import shutil
+
+    from tests.test_ai import _fake_claude
+
+    claude = _fake_claude(tmp_path, stdout=stdout)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    shutil.copy(claude, bindir / "claude")
+    (bindir / "claude").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+
+
+def test_ask_ai_renders_svg_answer_as_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An SVG in the answer is written to a temp file and rendered as an inline Image."""
+    import asyncio
+
+    from textual_image.widget import Image
+
+    from mdview.ask_ai import AskAiScreen
+
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="40">'
+        '<rect width="100" height="40" fill="#4ebf71"/></svg>'
+    )
+    _claude_on_path(tmp_path, monkeypatch, stdout=f"これは図解です。\n\n{svg}\n\n以上。")
+
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            app.screen.text_select_all()
+            await pilot.pause()
+            await pilot.press("a")
+            await pilot.pause()
+            assert isinstance(app.screen, AskAiScreen)
+
+            await pilot.press("enter")
+            images: list[Image] = []
+            for _ in range(40):
+                await pilot.pause()
+                images = list(app.screen.query(Image))
+                if images:
+                    break
+            assert images, "SVG answer should render as an inline Image"
+            # The image must live inside the dialog's answer area, i.e. in the popup.
+            answer_area = app.screen.query_one("#ask-ai-answer")
+            assert list(answer_area.query(Image)), "the diagram should render inside the popup"
+            svg_files = list(Path(app._tempdir.name).glob("ask-ai-*.svg"))
+            assert svg_files, "the generated SVG should be saved as a temp file"
+
+    asyncio.run(driver())
+
+
+def test_ask_ai_plain_answer_renders_no_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A plain-text answer (no SVG) mounts no Image widget."""
+    import asyncio
+
+    from textual_image.widget import Image
+
+    from mdview.ask_ai import AskAiScreen
+
+    _claude_on_path(tmp_path, monkeypatch, stdout="ただのテキスト回答。図はありません。")
+
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            app.screen.text_select_all()
+            await pilot.pause()
+            await pilot.press("a")
+            await pilot.pause()
+            assert isinstance(app.screen, AskAiScreen)
+
+            await pilot.press("enter")
+            # cwd.log is written by the fake claude when actually invoked, so its
+            # presence proves the query ran (not merely that nothing happened).
+            cwd_log = tmp_path / "cwd.log"
+            for _ in range(40):
+                await pilot.pause()
+                if cwd_log.exists():
+                    break
+            assert cwd_log.exists(), "claude should have been invoked"
+            for _ in range(5):
+                await pilot.pause()
+            assert not list(app.screen.query(Image)), "plain text answer needs no Image"
+
+    asyncio.run(driver())
+
+
+def test_ask_ai_renders_svg_saved_to_temp_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When Claude saves the diagram as a *file* in the temp dir (instead of
+    inlining it in stdout), the popup reads that file and renders it inline.
+
+    This is the real-world path: `claude -p` writes the SVG to disk and prints
+    only prose, so the popup must scan the dir it told Claude to save into.
+    """
+    import asyncio
+    import os
+    import shutil
+    import textwrap
+
+    from textual_image.widget import Image
+
+    from mdview.ask_ai import AskAiScreen
+
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="40">'
+        '<rect width="100" height="40" fill="#d97757"/></svg>'
+    )
+    # The fake CLI writes the SVG into the dir named by MDVIEW_TEST_SVG_DIR (set
+    # by the test to the popup's own output dir) and prints only prose.
+    script = tmp_path / "claude"
+    script.write_text(
+        textwrap.dedent(
+            f"""\
+            #!/usr/bin/env bash
+            pwd > "{tmp_path / 'cwd.log'}"
+            mkdir -p "$MDVIEW_TEST_SVG_DIR"
+            printf '%s' {svg!r} > "$MDVIEW_TEST_SVG_DIR/diagram.svg"
+            printf '%s' '図解を一時フォルダに保存しました。'
+            """
+        ),
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    shutil.copy(script, bindir / "claude")
+    (bindir / "claude").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            app.screen.text_select_all()
+            await pilot.pause()
+            await pilot.press("a")
+            await pilot.pause()
+            assert isinstance(app.screen, AskAiScreen)
+            # Point the fake CLI at the exact dir the popup will scan.
+            monkeypatch.setenv("MDVIEW_TEST_SVG_DIR", str(app.screen._svg_out_dir))
+
+            await pilot.press("enter")
+            images: list[Image] = []
+            for _ in range(40):
+                await pilot.pause()
+                images = list(app.screen.query(Image))
+                if images:
+                    break
+            assert images, "an SVG saved to the temp dir should render as an Image"
+            answer_area = app.screen.query_one("#ask-ai-answer")
+            assert list(answer_area.query(Image)), "the diagram should render inside the popup"
 
     asyncio.run(driver())
 

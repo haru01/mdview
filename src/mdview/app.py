@@ -321,7 +321,13 @@ class MdViewerApp(App):
             return
         document = self.query_one(MarkdownViewer).document.source
         self.push_screen(
-            AskAiScreen(selection, document, claude=claude, cwd=self._md_dir)
+            AskAiScreen(
+                selection,
+                document,
+                claude=claude,
+                cwd=self._md_dir,
+                tmpdir=Path(self._tempdir.name),
+            )
         )
 
     def action_toggle_toc(self) -> None:

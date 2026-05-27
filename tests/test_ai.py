@@ -40,6 +40,22 @@ def test_build_prompt_includes_document_selection_and_question() -> None:
     assert "これは何?" in prompt
 
 
+def test_build_prompt_without_svg_dir_has_no_save_instruction() -> None:
+    prompt = build_prompt("s", "q", "doc")
+    assert ".svg" not in prompt
+
+
+def test_build_prompt_with_svg_dir_instructs_saving_to_that_absolute_path(
+    tmp_path: Path,
+) -> None:
+    svg_dir = tmp_path / "out"
+    prompt = build_prompt("s", "q", "doc", svg_out_dir=svg_dir)
+    # The absolute output directory must appear so Claude saves SVGs there...
+    assert str(svg_dir) in prompt
+    # ...and the instruction must mention the .svg extension.
+    assert ".svg" in prompt
+
+
 def test_ask_claude_returns_stdout_runs_in_cwd_and_embeds_document(tmp_path: Path) -> None:
     workdir = tmp_path / "docs"
     workdir.mkdir()

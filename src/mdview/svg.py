@@ -3,7 +3,30 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
+
+# Matches a whole `<svg>…</svg>` element (lazy, so adjacent diagrams stay
+# separate). DOTALL lets the body span lines; IGNORECASE tolerates `<SVG>`.
+_SVG_RE = re.compile(r"<svg\b.*?</svg>", re.DOTALL | re.IGNORECASE)
+# An empty fenced code block left behind once its SVG body is pulled out.
+_EMPTY_FENCE_RE = re.compile(r"```[a-zA-Z]*\s*```")
+
+
+def extract_svgs(text: str) -> tuple[list[str], str]:
+    """Split SVG diagrams out of an AI answer.
+
+    Returns the `<svg>…</svg>` blocks (in order, whether raw or wrapped in a
+    ```svg fence) and the remaining prose with those blocks — and any fence that
+    only held them — removed. When there is no SVG, the text is returned as-is.
+    """
+    svgs = _SVG_RE.findall(text)
+    if not svgs:
+        return [], text
+    remaining = _SVG_RE.sub("", text)
+    remaining = _EMPTY_FENCE_RE.sub("", remaining)
+    remaining = re.sub(r"\n{3,}", "\n\n", remaining).strip()
+    return svgs, remaining
 
 _MAC_LIB_DIRS = (
     "/opt/homebrew/lib",  # macOS Apple Silicon
