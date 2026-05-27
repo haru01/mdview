@@ -319,7 +319,7 @@ def test_stdin_base_dir_overrides_resolution_root(tmp_path: Path) -> None:
 
 
 def test_ask_ai_without_selection_notifies(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pressing `a` with no selection warns instead of opening the modal."""
+    """Pressing `h` with no selection warns instead of opening the modal."""
     import asyncio
 
     from mdview.ask_ai import AskAiScreen
@@ -331,15 +331,42 @@ def test_ask_ai_without_selection_notifies(monkeypatch: pytest.MonkeyPatch) -> N
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
             await pilot.pause()
-            await pilot.press("a")
+            await pilot.press("h")
             await pilot.pause()
             assert not isinstance(app.screen, AskAiScreen), "no selection should not open the modal"
 
     asyncio.run(driver())
 
 
+def test_question_mark_toggles_help_and_h_does_not() -> None:
+    """`?` opens the help panel; `h` is Ask AI now and must not open help."""
+    import asyncio
+
+    from textual.widgets import HelpPanel
+
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("question_mark")
+            await pilot.pause()
+            assert app.screen.query(HelpPanel), "`?` should open the help panel"
+            await pilot.press("question_mark")
+            await pilot.pause()
+            assert not app.screen.query(HelpPanel), "`?` should toggle the help panel off"
+            # `h` (no selection) warns for Ask AI rather than opening help.
+            await pilot.press("h")
+            await pilot.pause()
+            assert not app.screen.query(HelpPanel), "`h` should no longer open help"
+
+    asyncio.run(driver())
+
+
 def test_ask_ai_opens_modal_with_selection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """With text selected and claude on PATH, `a` opens the AskAiScreen modal."""
+    """With text selected and claude on PATH, `h` opens the AskAiScreen modal."""
     import asyncio
     import os
 
@@ -367,7 +394,7 @@ def test_ask_ai_opens_modal_with_selection(tmp_path: Path, monkeypatch: pytest.M
             app.screen.text_select_all()
             await pilot.pause()
             assert app.screen.get_selected_text(), "select-all should yield text"
-            await pilot.press("a")
+            await pilot.press("h")
             await pilot.pause()
             assert isinstance(app.screen, AskAiScreen), "selection should open the modal"
 
@@ -412,7 +439,7 @@ def test_ask_ai_toggling_svg_refocuses_input(
             await pilot.pause()
             app.screen.text_select_all()
             await pilot.pause()
-            await pilot.press("a")
+            await pilot.press("h")
             await pilot.pause()
             assert isinstance(app.screen, AskAiScreen)
 
@@ -472,7 +499,7 @@ def test_ask_ai_renders_svg_answer_as_image(
             await pilot.pause()
             app.screen.text_select_all()
             await pilot.pause()
-            await pilot.press("a")
+            await pilot.press("h")
             await pilot.pause()
             assert isinstance(app.screen, AskAiScreen)
 
@@ -517,7 +544,7 @@ def test_ask_ai_plain_answer_renders_no_image(
             await pilot.pause()
             app.screen.text_select_all()
             await pilot.pause()
-            await pilot.press("a")
+            await pilot.press("h")
             await pilot.pause()
             assert isinstance(app.screen, AskAiScreen)
 
@@ -563,7 +590,7 @@ def test_ask_ai_svg_toggle_off_does_not_render_svg(
             await pilot.pause()
             app.screen.text_select_all()
             await pilot.pause()
-            await pilot.press("a")
+            await pilot.press("h")
             await pilot.pause()
             assert isinstance(app.screen, AskAiScreen)
 
@@ -635,7 +662,7 @@ def test_ask_ai_renders_svg_saved_to_temp_dir(
             await pilot.pause()
             app.screen.text_select_all()
             await pilot.pause()
-            await pilot.press("a")
+            await pilot.press("h")
             await pilot.pause()
             assert isinstance(app.screen, AskAiScreen)
             # Point the fake CLI at the exact dir the popup will scan.
@@ -683,7 +710,7 @@ def test_clicking_popup_svg_opens_zoom_screen(
             await pilot.pause()
             app.screen.text_select_all()
             await pilot.pause()
-            await pilot.press("a")
+            await pilot.press("h")
             await pilot.pause()
             assert isinstance(app.screen, AskAiScreen)
 

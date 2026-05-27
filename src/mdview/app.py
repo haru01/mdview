@@ -77,8 +77,8 @@ class MdViewerApp(App):
         Binding("p", "prev_heading", "Prev heading", show=True),
         Binding("t", "toggle_toc", "TOC", show=True),
         Binding("b,left", "go_back", "Back", show=True),
-        Binding("a", "ask_ai", "Ask AI", show=True),
-        Binding("h,question_mark", "toggle_help", "Help", show=True),
+        Binding("h", "ask_ai", "Ask AI", show=True),
+        Binding("question_mark", "toggle_help", "Help", show=True),
     ]
 
     def __init__(
