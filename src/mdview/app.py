@@ -50,6 +50,38 @@ class _DiffHighlightTheme(HighlightTheme):
     }
 
 
+class _DiffMarkdownFence(MarkdownFence):
+    """A code fence that keeps diff +/- colouring across stylesheet re-applies.
+
+    Textual's MarkdownFence re-highlights its own content with the default
+    (uncoloured) theme in ``notify_style_update`` — a hook that fires on *every*
+    stylesheet re-apply, e.g. when the TOC is toggled. A one-shot recolour after
+    load would therefore be wiped. Re-highlighting ```diff fences with the
+    diff-aware theme here makes the colours survive every restyle.
+    """
+
+    def notify_style_update(self) -> None:
+        if (self.lexer or "").lower() != "diff":
+            super().notify_style_update()
+            return
+        self._highlighted_code = highlight(
+            self.code, language="diff", theme=_DiffHighlightTheme
+        )
+        self.set_content(self._highlighted_code)
+        # Skip MarkdownFence's own default-theme re-highlight, but still run the
+        # rest of the style-update chain (cache clearing, child propagation).
+        super(MarkdownFence, self).notify_style_update()
+
+
+class _DiffMarkdown(Markdown):
+    """Markdown document that builds diff-aware fences for code blocks."""
+
+    def get_block_class(self, block_name: str) -> type[MarkdownFence]:
+        if block_name in ("fence", "code_block"):
+            return _DiffMarkdownFence
+        return super().get_block_class(block_name)
+
+
 class _MdViewer(MarkdownViewer):
     """MarkdownViewer that skips the built-in CWD-based link handler.
 
@@ -57,7 +89,17 @@ class _MdViewer(MarkdownViewer):
     against the process CWD instead of the current document's directory. We
     route link clicks ourselves from the App so paths resolve relative to the
     file being viewed.
+
+    It also swaps in `_DiffMarkdown` so ```diff fences stay colourized across
+    stylesheet re-applies (see `_DiffMarkdownFence`).
     """
+
+    def compose(self) -> ComposeResult:
+        # Mirror MarkdownViewer.compose, but with our diff-aware document.
+        markdown = _DiffMarkdown(parser_factory=self._parser_factory, open_links=self._open_links)
+        markdown.can_focus = True
+        yield markdown
+        yield MarkdownTableOfContents(markdown)
 
     async def _on_markdown_link_clicked(self, message: Markdown.LinkClicked) -> None:
         # prevent_default() suppresses MarkdownViewer's base handler in the
@@ -136,20 +178,6 @@ class MdViewerApp(App):
             return
         await self._inject_images()
         await self._inject_mermaid()
-        self._recolor_diff_fences()
-
-    def _recolor_diff_fences(self) -> None:
-        """Re-highlight ```diff fences with a theme that colours +/- lines.
-
-        cli.py rewrites a piped/loaded diff into Markdown with ```diff fences;
-        here we restyle them since Textual's default theme leaves +/- uncoloured.
-        """
-        viewer = self.query_one(MarkdownViewer)
-        for fence in viewer.document.query(MarkdownFence):
-            if (fence.lexer or "").lower() == "diff":
-                fence.set_content(
-                    highlight(fence.code, language="diff", theme=_DiffHighlightTheme)
-                )
 
     async def _inject_images(self) -> None:
         viewer = self.query_one(MarkdownViewer)
@@ -277,7 +305,6 @@ class MdViewerApp(App):
         self.title = path.name
         await self._inject_images()
         await self._inject_mermaid()
-        self._recolor_diff_fences()
         if anchor:
             self.call_after_refresh(viewer.document.goto_anchor, anchor)
         else:

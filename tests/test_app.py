@@ -781,6 +781,48 @@ def test_diff_fences_colour_added_and_removed_lines() -> None:
     asyncio.run(driver())
 
 
+def test_diff_fence_colour_survives_style_refresh() -> None:
+    """A stylesheet re-apply must keep the diff +/- colouring.
+
+    Regression: Textual's MarkdownFence re-highlights itself with its default
+    (uncoloured) theme in notify_style_update(), which fires on every stylesheet
+    re-apply (theme change, resize, toggling a panel…). _DiffMarkdownFence
+    overrides that hook to re-apply the diff-aware theme, so the colours persist.
+    """
+    import asyncio
+
+    from textual.widgets._markdown import MarkdownFence
+
+    from mdview.diff import diff_to_markdown
+
+    raw = (
+        "diff --git a/x.py b/x.py\n"
+        "--- a/x.py\n"
+        "+++ b/x.py\n"
+        "@@ -1,2 +1,2 @@\n"
+        "-old\n"
+        "+new\n"
+    )
+
+    async def driver() -> None:
+        app = MdViewerApp(content=diff_to_markdown(raw))
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            fences = [f for f in app.query(MarkdownFence) if (f.lexer or "").lower() == "diff"]
+            assert fences, "expected a diff fence"
+            fence = fences[0]
+            # Drive the exact hook a stylesheet re-apply fires; the unpatched
+            # MarkdownFence would here revert to the default uncoloured theme.
+            fence.notify_style_update()
+            await pilot.pause()
+            styles = {span.style for span in fence._content.spans}
+            assert "$text-success" in styles, "added line should stay green after a restyle"
+            assert "$text-error" in styles, "removed line should stay red after a restyle"
+
+    asyncio.run(driver())
+
+
 def test_n_p_navigate_diff_hunk_and_file_headings() -> None:
     """n jumps between the `##` file / `### @@` hunk headings of a rendered diff."""
     import asyncio
