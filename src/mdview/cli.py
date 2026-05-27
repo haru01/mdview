@@ -4,6 +4,10 @@ import argparse
 import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from mdview.diff import FileDiff
 
 
 def main() -> None:
@@ -26,15 +30,15 @@ def main() -> None:
         print(f"mdview: {path}: not a regular file", file=sys.stderr)
         sys.exit(1)
 
-    # `mdview x.diff` / `x.patch`: rewrite a diff file the same way piped diffs
-    # are, then render from the transformed Markdown via the content path.
-    diff_md = _diff_markdown_for_file(path)
+    # `mdview x.diff` / `x.patch`: a unified diff is parsed and rendered in the
+    # delta-like style (TUI or non-TTY); anything else is plain Markdown.
+    files = _diff_files_for_path(path)
 
     if not sys.stdout.isatty():
-        if diff_md is not None:
-            from mdview.render import print_markdown_text
+        if files is not None:
+            from mdview.render import print_diff
 
-            print_markdown_text(diff_md)
+            print_diff(files)
         else:
             from mdview.render import print_markdown
 
@@ -43,41 +47,55 @@ def main() -> None:
 
     from mdview.app import MdViewerApp
 
-    if diff_md is not None:
-        MdViewerApp(content=diff_md, base_dir=path.parent).run()
+    if files is not None:
+        from mdview.diff import diff_to_markdown
+
+        MdViewerApp(content=diff_to_markdown(files), base_dir=path.parent, diff_files=files).run()
     else:
         MdViewerApp(path).run()
 
 
-def _diff_markdown_for_file(path: Path) -> str | None:
-    """Return structured Markdown if *path* holds a unified diff, else None."""
-    from mdview.diff import diff_to_markdown, looks_like_diff
+def _diff_files_for_path(path: Path) -> list[FileDiff] | None:
+    """Return the parsed diff model if *path* holds a unified diff, else None."""
+    from mdview.diff import looks_like_diff, parse_diff
 
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None
-    return diff_to_markdown(text) if looks_like_diff(text) else None
+    return parse_diff(text) if looks_like_diff(text) else None
 
 
 def _run_stdin() -> None:
-    from mdview.diff import maybe_diff_to_markdown
+    from mdview.diff import looks_like_diff, parse_diff
 
-    # A raw diff (e.g. `gh pr diff | mdview -`) is rewritten into structured,
-    # navigable Markdown before rendering; plain Markdown passes through.
-    content = maybe_diff_to_markdown(sys.stdin.read())
+    # A raw diff (e.g. `gh pr diff | mdview -`) is parsed and rendered delta-like;
+    # plain Markdown passes through unchanged.
+    text = sys.stdin.read()
+    files = parse_diff(text) if looks_like_diff(text) else None
+
     # When output is going to a real terminal, point stdin at the controlling
     # tty (stdin itself is the now-consumed pipe) so the TUI can read keys.
     # Otherwise just emit rendered text, matching the file-path pipe behavior.
     if sys.stdout.isatty() and _reattach_tty():
         from mdview.app import MdViewerApp
 
-        MdViewerApp(content=content).run()
+        if files is not None:
+            from mdview.diff import diff_to_markdown
+
+            MdViewerApp(content=diff_to_markdown(files), diff_files=files).run()
+        else:
+            MdViewerApp(content=text).run()
         return
 
-    from mdview.render import print_markdown_text
+    if files is not None:
+        from mdview.render import print_diff
 
-    print_markdown_text(content)
+        print_diff(files)
+    else:
+        from mdview.render import print_markdown_text
+
+        print_markdown_text(text)
 
 
 def _reattach_tty() -> bool:

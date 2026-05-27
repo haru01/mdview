@@ -750,91 +750,72 @@ def test_document_svg_renders_as_zoomable_image() -> None:
     asyncio.run(driver())
 
 
-def test_diff_fences_colour_added_and_removed_lines() -> None:
-    """A piped diff renders with +/- lines coloured green/red in the TUI."""
+def _diff_app(raw: str) -> MdViewerApp:
+    """Build a TUI app from a raw unified diff (parse once, pass the model)."""
+    from mdview.diff import diff_to_markdown, parse_diff
+
+    files = parse_diff(raw)
+    return MdViewerApp(content=diff_to_markdown(files), diff_files=files)
+
+
+def test_diff_fences_become_delta_hunk_widgets() -> None:
+    """A piped diff renders as delta-styled DiffHunk widgets, not raw fences."""
     import asyncio
 
     from textual.widgets._markdown import MarkdownFence
 
-    from mdview.diff import diff_to_markdown
+    from mdview.diff_widget import DiffHunk
 
-    raw = (
-        "diff --git a/x.py b/x.py\n"
-        "--- a/x.py\n"
-        "+++ b/x.py\n"
-        "@@ -1,2 +1,2 @@\n"
-        "-old\n"
-        "+new\n"
-    )
+    raw = "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1,2 +1,2 @@\n-old\n+new\n"
 
     async def driver() -> None:
-        app = MdViewerApp(content=diff_to_markdown(raw))
+        app = _diff_app(raw)
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
             await pilot.pause()
-            fences = [f for f in app.query(MarkdownFence) if (f.lexer or "").lower() == "diff"]
-            assert fences, "expected a diff fence"
-            styles = {span.style for span in fences[0]._content.spans}
-            assert "$text-success" in styles, "added line should be green"
-            assert "$text-error" in styles, "removed line should be red"
+            hunks = list(app.query(DiffHunk))
+            assert hunks, "expected a DiffHunk widget"
+            # the placeholder ```diff fence has been swapped out
+            assert not [
+                f for f in app.query(MarkdownFence) if (f.lexer or "").lower() == "diff"
+            ]
+            shown = str(hunks[0].render())
+            assert "old" in shown and "new" in shown
 
     asyncio.run(driver())
 
 
-def test_diff_fence_colour_survives_style_refresh() -> None:
-    """A stylesheet re-apply must keep the diff +/- colouring.
-
-    Regression: Textual's MarkdownFence re-highlights itself with its default
-    (uncoloured) theme in notify_style_update(), which fires on every stylesheet
-    re-apply (theme change, resize, toggling a panel…). _DiffMarkdownFence
-    overrides that hook to re-apply the diff-aware theme, so the colours persist.
-    """
+def test_diff_hunk_selection_yields_clean_unified_diff() -> None:
+    """Clicking a hunk selects it; the selected text is a valid diff (no gutter)."""
     import asyncio
 
-    from textual.widgets._markdown import MarkdownFence
+    from mdview.diff_widget import DiffHunk
 
-    from mdview.diff import diff_to_markdown
-
-    raw = (
-        "diff --git a/x.py b/x.py\n"
-        "--- a/x.py\n"
-        "+++ b/x.py\n"
-        "@@ -1,2 +1,2 @@\n"
-        "-old\n"
-        "+new\n"
-    )
+    raw = "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1,2 +1,2 @@\n-old\n+new\n"
 
     async def driver() -> None:
-        app = MdViewerApp(content=diff_to_markdown(raw))
+        app = _diff_app(raw)
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
             await pilot.pause()
-            fences = [f for f in app.query(MarkdownFence) if (f.lexer or "").lower() == "diff"]
-            assert fences, "expected a diff fence"
-            fence = fences[0]
-            # Drive the exact hook a stylesheet re-apply fires; the unpatched
-            # MarkdownFence would here revert to the default uncoloured theme.
-            fence.notify_style_update()
+            hunk = app.query(DiffHunk).first()
+            await pilot.click(hunk)
             await pilot.pause()
-            styles = {span.style for span in fence._content.spans}
-            assert "$text-success" in styles, "added line should stay green after a restyle"
-            assert "$text-error" in styles, "removed line should stay red after a restyle"
+            selected = app.screen.get_selected_text() or ""
+            assert selected == "@@ -1,2 +1,2 @@\n-old\n+new", selected
 
     asyncio.run(driver())
 
 
-def test_n_p_navigate_diff_hunk_and_file_headings() -> None:
-    """n jumps between the `##` file / `### @@` hunk headings of a rendered diff."""
+def test_n_navigates_between_file_headings() -> None:
+    """With @@ no longer a heading, `n` jumps between the `##` file headings."""
     import asyncio
 
     from textual.widgets import MarkdownViewer
 
-    from mdview.diff import diff_to_markdown
-
     raw = "".join(
         f"diff --git a/file{f}.txt b/file{f}.txt\n"
-        f"--- a/file{f}.txt\n"
-        f"+++ b/file{f}.txt\n"
+        f"--- a/file{f}.txt\n+++ b/file{f}.txt\n"
         "@@ -1,20 +1,20 @@\n"
         + "".join(f" ctx {f}-{k}\n" for k in range(20))
         + f"-old{f}\n+new{f}\n"
@@ -842,7 +823,7 @@ def test_n_p_navigate_diff_hunk_and_file_headings() -> None:
     )
 
     async def driver() -> None:
-        app = MdViewerApp(content=diff_to_markdown(raw))
+        app = _diff_app(raw)
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
             await pilot.pause()
@@ -850,7 +831,150 @@ def test_n_p_navigate_diff_hunk_and_file_headings() -> None:
             start = viewer.scroll_y
             await pilot.press("n")
             await pilot.pause()
-            assert viewer.scroll_y > start, "`n` should jump to the next diff heading"
+            assert viewer.scroll_y > start, "`n` should jump to the next file heading"
+
+    asyncio.run(driver())
+
+
+def test_s_navigates_between_hunks() -> None:
+    """`s` jumps to the next hunk within the diff (hunks are no longer headings)."""
+    import asyncio
+
+    from textual.widgets import MarkdownViewer
+
+    raw = (
+        "diff --git a/big.py b/big.py\n--- a/big.py\n+++ b/big.py\n"
+        "@@ -1,20 +1,20 @@\n"
+        + "".join(f" ctx a{k}\n" for k in range(20))
+        + "-old1\n+new1\n"
+        "@@ -60,20 +60,20 @@\n"
+        + "".join(f" ctx b{k}\n" for k in range(20))
+        + "-old2\n+new2\n"
+    )
+
+    async def driver() -> None:
+        app = _diff_app(raw)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            viewer = app.query_one(MarkdownViewer)
+            start = viewer.scroll_y
+            await pilot.press("s")
+            await pilot.pause()
+            assert viewer.scroll_y > start, "`s` should jump to the next hunk"
+
+    asyncio.run(driver())
+
+
+def test_diff_file_heading_hugs_its_first_hunk() -> None:
+    """No blank row between a `## file` heading and its first `@@` hunk."""
+    import asyncio
+
+    from textual.widgets._markdown import MarkdownHeader
+
+    from mdview.diff_widget import DiffHunk
+
+    raw = "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1,2 +1,2 @@\n-a\n+A\n"
+
+    async def driver() -> None:
+        app = _diff_app(raw)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            heading = app.query(MarkdownHeader).first()
+            hunk = app.query(DiffHunk).first()
+            assert hunk.region.y == heading.region.bottom, "the @@ hunk should hug the heading"
+
+    asyncio.run(driver())
+
+
+def test_embedded_diff_fence_in_markdown_becomes_hunk_widget() -> None:
+    """A ```diff fence inside ordinary Markdown is upgraded to a DiffHunk too."""
+    import asyncio
+
+    from mdview.diff_widget import DiffHunk
+
+    # Not a whole diff (so diff_files is None) — the embedded-fence branch runs.
+    md = "# Doc\n\nExample:\n\n```diff\n-old\n+new\n```\n\nEnd.\n"
+
+    async def driver() -> None:
+        app = MdViewerApp(content=md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            hunks = list(app.query(DiffHunk))
+            assert len(hunks) == 1
+            await pilot.click(hunks[0])
+            await pilot.pause()
+            assert (app.screen.get_selected_text() or "") == "-old\n+new"
+
+    asyncio.run(driver())
+
+
+def test_diff_hunk_selection_expands_to_its_file_section() -> None:
+    """Clicking a hunk again expands to its `## file` section, not the next file."""
+    import asyncio
+
+    from mdview.diff_widget import DiffHunk
+
+    raw = (
+        "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-a\n+A\n"
+        "diff --git a/b.py b/b.py\n--- a/b.py\n+++ b/b.py\n@@ -1 +1 @@\n-b\n+B\n"
+    )
+
+    async def driver() -> None:
+        app = _diff_app(raw)
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            hunk = app.query(DiffHunk).first()  # a.py's hunk
+            await pilot.click(hunk)
+            await pilot.pause()
+            first = app.screen.get_selected_text() or ""
+            assert first == "@@ -1 +1 @@\n-a\n+A", first
+
+            await pilot.click(hunk)  # expand one rung → the a.py file section
+            await pilot.pause()
+            second = app.screen.get_selected_text() or ""
+            assert "a.py" in second and "+A" in second, second
+            assert "b.py" not in second and "+B" not in second, second
+            assert len(second) > len(first)
+
+    asyncio.run(driver())
+
+
+def test_ask_ai_on_diff_hunk_sends_clean_diff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Selecting a hunk and pressing `h` feeds Ask AI a valid unified diff."""
+    import asyncio
+    import os
+    import shutil
+
+    from tests.test_ai import _fake_claude
+    from mdview.ask_ai import AskAiScreen
+    from mdview.diff_widget import DiffHunk
+
+    claude = _fake_claude(tmp_path)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    shutil.copy(claude, bindir / "claude")
+    (bindir / "claude").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+
+    raw = "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1,2 +1,2 @@\n-old\n+new\n"
+
+    async def driver() -> None:
+        app = _diff_app(raw)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.click(app.query(DiffHunk).first())
+            await pilot.pause()
+            await pilot.press("h")
+            await pilot.pause()
+            assert isinstance(app.screen, AskAiScreen)
+            assert app.screen._selection == "@@ -1,2 +1,2 @@\n-old\n+new"
 
     asyncio.run(driver())
 

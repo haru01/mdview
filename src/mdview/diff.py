@@ -1,36 +1,77 @@
-"""Mechanically turn a raw unified diff into structured Markdown.
+"""Parse a raw unified diff into a structured model, and scaffold it as Markdown.
 
-`gh pr diff` / `git diff` emit a raw unified diff that, viewed as Markdown,
-is unreadable: headers and `+`/`-` lines get misparsed and nothing is coloured.
-This module rewrites such input into Markdown where each file becomes an `##`
-heading and each `@@` hunk a `### @@ ...` heading, with the hunk body in a
-```diff fenced block. That makes the diff readable (the fence is colour-
-highlighted downstream) and navigable (`n`/`p` jump between the headings).
+`gh pr diff` / `git diff` emit a raw unified diff that, viewed as Markdown, is
+unreadable. This module first parses such input into a small, framework-free
+model (`parse_diff` → `list[FileDiff]`). Two consumers render that model:
 
-The transform is purely deterministic string processing — no LLM, no external
-process. Same input always yields the same output.
+- the TUI swaps each ```diff fence emitted by `diff_to_markdown` for a
+  delta-styled `DiffHunk` widget (see `mdview.diff_widget` / `mdview.diffview`);
+- the non-TTY path renders the model directly with Rich.
+
+`diff_to_markdown` keeps each file as a `##` heading (so the TOC lists changed
+files and `n`/`p` jump between them) but, unlike before, does **not** turn `@@`
+hunk headers into `###` headings — the hunk body simply lives in a ```diff
+fence that the TUI replaces. The transform is purely deterministic: same input
+always yields the same output.
 """
 
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 
 # A hunk header: `@@ -12,3 +12,4 @@ optional context`
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@")
-# Split a hunk header into its `@@ ... @@` range part and the trailing context.
-_HUNK_SPLIT_RE = re.compile(r"^(@@ .*? @@)(.*)$")
+# Capture the old/new start line numbers from a hunk header.
+_HUNK_START_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 # `diff --git a/<path> b/<path>` — greedy, good enough for paths without spaces.
 _GIT_RE = re.compile(r"^diff --git a/(.+) b/(.+)$")
 # Markdown inline characters that must be escaped inside heading text.
 _MD_SPECIAL_RE = re.compile(r"([\\`*_\[\]<])")
+
+_STATUS_SUFFIX = {
+    "new file": " (new file)",
+    "deleted": " (deleted)",
+    "renamed": " (renamed)",
+}
+
+
+@dataclass(frozen=True)
+class DiffLine:
+    """One body line of a hunk, classified and line-numbered."""
+
+    kind: str  # "context" | "add" | "del"
+    old_no: int | None
+    new_no: int | None
+    text: str  # the line content with its leading +/-/space marker stripped
+
+
+@dataclass
+class Hunk:
+    """A single `@@ … @@` hunk: its header, body lines, and clean diff text."""
+
+    header: str  # the full `@@ -.. +.. @@ context` line ("" if unknown)
+    old_start: int
+    new_start: int
+    lines: list[DiffLine] = field(default_factory=list)
+    raw: str = ""  # header + body as a valid unified diff (for selection / AI)
+
+
+@dataclass
+class FileDiff:
+    """All hunks for one file, plus its path and status."""
+
+    path: str
+    status: str = ""  # "" | "new file" | "deleted" | "renamed"
+    binary_note: str = ""
+    hunks: list[Hunk] = field(default_factory=list)
 
 
 def _escape_md(text: str) -> str:
     """Backslash-escape characters that would trigger Markdown inline markup.
 
     Covers emphasis (`*` `_`), code (`` ` ``), links (`[` `]`) and raw HTML /
-    autolinks (`<`) — e.g. keeps `__init__.py` from rendering "init" in bold and
-    `List[int]` / `<tag>` in a hunk's context from being mangled.
+    autolinks (`<`) — e.g. keeps `__init__.py` from rendering "init" in bold.
     """
     return _MD_SPECIAL_RE.sub(r"\\\1", text)
 
@@ -82,8 +123,40 @@ def looks_like_diff(text: str) -> bool:
     return False
 
 
-def diff_to_markdown(text: str) -> str:
-    """Rewrite a unified diff into structured, navigable Markdown."""
+def _build_hunk(header: str, body: list[str]) -> Hunk:
+    """Classify *body* lines against *header*, numbering old/new sides."""
+    match = _HUNK_START_RE.match(header)
+    old_no, new_no = (int(match.group(1)), int(match.group(2))) if match else (1, 1)
+    lines: list[DiffLine] = []
+    for line in body:
+        marker = line[:1]
+        if marker == "+":
+            lines.append(DiffLine("add", None, new_no, line[1:]))
+            new_no += 1
+        elif marker == "-":
+            lines.append(DiffLine("del", old_no, None, line[1:]))
+            old_no += 1
+        elif marker == "\\":
+            # "\ No newline at end of file" — metadata, not a numbered line.
+            lines.append(DiffLine("context", None, None, line))
+        else:  # " " context, or a bare blank line
+            text = line[1:] if marker == " " else line
+            lines.append(DiffLine("context", old_no, new_no, text))
+            old_no += 1
+            new_no += 1
+    raw = "\n".join([header, *body]) if header else "\n".join(body)
+    start = _HUNK_START_RE.match(header)
+    return Hunk(
+        header=header,
+        old_start=int(start.group(1)) if start else 1,
+        new_start=int(start.group(2)) if start else 1,
+        lines=lines,
+        raw=raw,
+    )
+
+
+def parse_diff(text: str) -> list[FileDiff]:
+    """Parse a unified diff into a list of `FileDiff`."""
     lines = _lines(text)
     n = len(lines)
     has_git = any(line.startswith("diff --git ") for line in lines)
@@ -97,7 +170,7 @@ def diff_to_markdown(text: str) -> str:
             return idx + 1 < n and lines[idx + 1].startswith("+++ ")
         return False
 
-    blocks: list[str] = []
+    files: list[FileDiff] = []
     i = 0
     while i < n and not is_file_start(i):  # skip any preamble
         i += 1
@@ -116,8 +189,7 @@ def diff_to_markdown(text: str) -> str:
 
         # File header lines, up to the first hunk or the *next* file. The
         # `i > section_start` guard keeps a plain diff's own leading `--- ` line
-        # (which is itself a file-start marker) from ending the scan on entry —
-        # otherwise `i` would never advance and the parser would spin forever.
+        # (itself a file-start marker) from ending the scan on entry.
         while (
             i < n
             and not _HUNK_RE.match(lines[i])
@@ -125,11 +197,11 @@ def diff_to_markdown(text: str) -> str:
         ):
             line = lines[i]
             if line.startswith("new file mode"):
-                status = " (new file)"
+                status = "new file"
             elif line.startswith("deleted file mode"):
-                status = " (deleted)"
+                status = "deleted"
             elif line.startswith(("rename from", "rename to", "copy to")):
-                status = " (renamed)"
+                status = "renamed"
             elif line.startswith("--- "):
                 stripped = _strip_ab(line[4:])
                 if stripped != "/dev/null":
@@ -142,12 +214,9 @@ def diff_to_markdown(text: str) -> str:
                 binary_note = line.strip()
             i += 1
 
-        display = (path_a if status == " (deleted)" else path_b) or path_b or path_a or "(unknown)"
-        blocks.append(f"## {_escape_md(display)}{status}")
-        if binary_note:
-            blocks.append(_escape_md(binary_note))
+        display = (path_a if status == "deleted" else path_b) or path_b or path_a or "(unknown)"
+        file = FileDiff(path=display, status=status, binary_note=binary_note)
 
-        # Hunks.
         while i < n and _HUNK_RE.match(lines[i]):
             header = lines[i]
             i += 1
@@ -155,17 +224,9 @@ def diff_to_markdown(text: str) -> str:
             while i < n and not _HUNK_RE.match(lines[i]) and not is_file_start(i):
                 body.append(lines[i])
                 i += 1
+            file.hunks.append(_build_hunk(header, body))
 
-            split = _HUNK_SPLIT_RE.match(header)
-            heading = split.group(1) + _escape_md(split.group(2)) if split else _escape_md(header)
-            blocks.append(f"### {heading}")
-
-            body_text = "\n".join(body)
-            fence = "`" * max(3, _max_backtick_run(body_text) + 1)
-            if body_text:
-                blocks.append(f"{fence}diff\n{body_text}\n{fence}")
-            else:
-                blocks.append(f"{fence}diff\n{fence}")
+        files.append(file)
 
         # Skip any stray lines before the next file boundary (malformed input).
         while i < n and not is_file_start(i) and not _HUNK_RE.match(lines[i]):
@@ -175,9 +236,35 @@ def diff_to_markdown(text: str) -> str:
         if i == section_start:
             i += 1
 
+    return files
+
+
+def parse_hunk_lines(code: str) -> Hunk:
+    """Parse a standalone fence body (e.g. a ```diff block authored in Markdown).
+
+    The body may or may not start with an `@@` header; everything else is a
+    normal unified-diff body. Used for diff fences that are *not* part of a
+    whole-document diff (so there is no `FileDiff` model to draw from).
+    """
+    lines = _lines(code)
+    if lines and _HUNK_RE.match(lines[0]):
+        return _build_hunk(lines[0], lines[1:])
+    return _build_hunk("", lines)
+
+
+def diff_to_markdown(files: list[FileDiff]) -> str:
+    """Scaffold parsed *files* as Markdown the TUI can post-process.
+
+    Each file becomes a `##` heading; each hunk becomes a single ```diff fence
+    holding its raw text. The fence is a placeholder the TUI swaps for a
+    delta-styled widget — and a readable fallback if it does not.
+    """
+    blocks: list[str] = []
+    for file in files:
+        blocks.append(f"## {_escape_md(file.path)}{_STATUS_SUFFIX.get(file.status, '')}")
+        if file.binary_note:
+            blocks.append(_escape_md(file.binary_note))
+        for hunk in file.hunks:
+            fence = "`" * max(3, _max_backtick_run(hunk.raw) + 1)
+            blocks.append(f"{fence}diff\n{hunk.raw}\n{fence}" if hunk.raw else f"{fence}diff\n{fence}")
     return "\n\n".join(blocks) + "\n"
-
-
-def maybe_diff_to_markdown(text: str) -> str:
-    """Transform *text* if it looks like a diff, otherwise return it unchanged."""
-    return diff_to_markdown(text) if looks_like_diff(text) else text

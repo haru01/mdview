@@ -27,25 +27,27 @@ There is no linter or formatter configured; match the surrounding style (`from _
 - **Non-TTY stdout** (pipe/CI/`| less`) → `render.py` prints with Rich, no TUI.
 - **TTY** → launches `app.MdViewerApp` (Textual).
 - **stdin** (`mdview -`): after reading the pipe, fd 0 is re-pointed at `/dev/tty` so the TUI can still read keys.
-- **Diff detection**: `.diff`/`.patch` files and piped input that `looks_like_diff` are rewritten by `diff.py` into structured Markdown *before* rendering — for both the TUI and non-TTY paths.
+- **Diff detection**: `.diff`/`.patch` files and piped input that `looks_like_diff` are parsed by `diff.py` into a model (`list[FileDiff]`). The TUI renders it as `## file` Markdown headings + per-hunk ```diff fences (swapped for delta widgets, see below); the non-TTY path renders the model directly with Rich (`render.print_diff`).
 
 ### The TUI (`app.py:MdViewerApp`)
 Wraps Textual's `MarkdownViewer`. The core pattern: load the document, then **post-process the rendered widget tree** in `on_mount` / `_load_file`:
 - `_inject_images` — swaps image-only paragraphs for `Image` / `ZoomableImage` widgets.
 - `_inject_mermaid` — swaps ```mermaid fences for rendered PNGs (only if `mmdc` is on PATH).
-- `_recolor_diff_fences` — restyles ```diff fences with `_DiffHighlightTheme` (Textual leaves +/- lines uncoloured).
+- `_inject_diff_hunks` — swaps each ```diff fence for a delta-styled `DiffHunk` widget (line-number gutter, green/red background bars, per-language syntax highlighting). `## file` headings stay (so the TOC lists changed files and `n`/`p` jump between them); `@@` hunk headers are *not* headings — `s`/`S` jump between hunks instead.
 
 **Key design rule: all relative paths (images, links) resolve against the *viewed document's* directory, not the process CWD.** This is why `_MdViewer` overrides `_on_markdown_link_clicked` to suppress the base class's CWD-based navigator — the app routes link clicks itself (`on_markdown_link_clicked` → `_navigate_to`), keeps a `_history` stack for `b`/back, and handles `#anchor` links.
 
 ### Isolation pattern (testability)
 Anything touching a subprocess or rasterization is split into a **pure module** (unit-testable without a TUI) plus a thin Textual wrapper:
 - `ai.py` (subprocess + prompt building) ↔ `ask_ai.py` (`AskAiScreen` modal)
-- `svg.py`, `mermaid.py`, `diff.py`, `selection.py` are all pure / framework-free.
+- `svg.py`, `mermaid.py`, `diff.py`, `diffview.py`, `selection.py` are all pure / framework-free.
+- `diffview.py` (delta-style hunk → Rich `Text`) ↔ `diff_widget.py` (`DiffHunk`, a `Static` whose `render` is that `Text`; `get_selection` returns the clean unified diff so a selected/copied hunk stays valid for Ask AI).
 
 When adding rendering or subprocess logic, keep the pure part in its own module and unit-test it directly.
 
 ### Notable modules
-- **`diff.py`** — purely deterministic string transform (no LLM): each file → `##` heading, each `@@` hunk → `### @@…` heading + ```diff fence. `looks_like_diff` is front-anchored so ordinary Markdown that merely *embeds* a diff isn't misclassified.
+- **`diff.py`** — purely deterministic (no LLM). `parse_diff` builds a `list[FileDiff]` model (files → hunks → classified, line-numbered `DiffLine`s; `hunk.raw` is the clean unified-diff text). `diff_to_markdown(files)` scaffolds the TUI document (`## file` heading + one ```diff placeholder fence per hunk — **no** `### @@` headings). `parse_hunk_lines` parses a standalone fence body (a diff example authored inside ordinary Markdown). `looks_like_diff` is front-anchored so Markdown that merely *embeds* a diff isn't misclassified.
+- **`diffview.py`** — renders a parsed `Hunk` to a delta-styled Rich `Text` (`render_hunk`): two-column line-number gutter, `+`/`-` markers kept, green/red full-line background bars (`ADD_BG`/`DEL_BG`), code syntax-highlighted in the file's language (`guess_lexer` + Rich `Syntax`). Shared by the TUI widget and `render.print_diff`.
 - **`selection.py`** — semantic-selection "expansion ladder" (block → list item → list/quote → section → document). Pure functions over the Textual widget tree; `app.py` applies the scopes. Note the tree quirks documented at the top: list items are `Horizontal` under `MarkdownList` (no `MarkdownListItem` widget is mounted), and tables are atomic.
 - **`svg.py`** — `rasterize_svg` via cairosvg. Two non-obvious fixes: splices a CJK font stylesheet into the SVG (cairo's toy font API does no per-glyph fallback → Japanese renders as tofu), and augments `DYLD_FALLBACK_LIBRARY_PATH` on macOS so Homebrew's libs load. `extract_svgs` pulls SVG blocks out of AI answers.
 - **`mermaid.py`** — renders via `mmdc` to **PNG, not SVG**, because Mermaid's flowchart `<foreignObject>` labels are dropped by cairosvg.

@@ -6,11 +6,9 @@ from pathlib import Path
 from urllib.parse import unquote
 
 from markdown_it.token import Token
-from pygments.token import Generic
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.highlight import HighlightTheme, highlight
 from textual.selection import SELECT_ALL, Selection
 from textual.widget import Widget
 from textual.widgets import Markdown, MarkdownViewer
@@ -24,6 +22,8 @@ from textual_image.widget import Image
 
 from mdview.ai import find_claude
 from mdview.ask_ai import AskAiScreen
+from mdview.diff import FileDiff, parse_hunk_lines
+from mdview.diff_widget import DiffHunk
 from mdview.image_zoom import ZoomableImage
 from mdview.mermaid import MermaidRenderError, find_mmdc, render_mermaid
 from mdview.selection import ATOMIC_BLOCKS, build_scopes, find_leaf_block
@@ -35,71 +35,14 @@ _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 _MARKDOWN_EXTS = {".md", ".markdown", ".mdown", ".mkd"}
 
 
-class _DiffHighlightTheme(HighlightTheme):
-    """Syntax theme that colours diff added/removed lines.
-
-    Textual's base theme leaves ``Generic.Inserted``/``Generic.Deleted``
-    unstyled, so a ```diff fence shows +/- lines in the default colour. We map
-    them to the semantic success/error colours so diffs read like a diff.
-    """
-
-    STYLES = {
-        **HighlightTheme.STYLES,
-        Generic.Inserted: "$text-success",
-        Generic.Deleted: "$text-error",
-    }
-
-
-class _DiffMarkdownFence(MarkdownFence):
-    """A code fence that keeps diff +/- colouring across stylesheet re-applies.
-
-    Textual's MarkdownFence re-highlights its own content with the default
-    (uncoloured) theme in ``notify_style_update`` — a hook that fires on *every*
-    stylesheet re-apply, e.g. when the TOC is toggled. A one-shot recolour after
-    load would therefore be wiped. Re-highlighting ```diff fences with the
-    diff-aware theme here makes the colours survive every restyle.
-    """
-
-    def notify_style_update(self) -> None:
-        if (self.lexer or "").lower() != "diff":
-            super().notify_style_update()
-            return
-        self._highlighted_code = highlight(
-            self.code, language="diff", theme=_DiffHighlightTheme
-        )
-        self.set_content(self._highlighted_code)
-        # Skip MarkdownFence's own default-theme re-highlight, but still run the
-        # rest of the style-update chain (cache clearing, child propagation).
-        super(MarkdownFence, self).notify_style_update()
-
-
-class _DiffMarkdown(Markdown):
-    """Markdown document that builds diff-aware fences for code blocks."""
-
-    def get_block_class(self, block_name: str) -> type[MarkdownFence]:
-        if block_name in ("fence", "code_block"):
-            return _DiffMarkdownFence
-        return super().get_block_class(block_name)
-
-
 class _MdViewer(MarkdownViewer):
-    """MarkdownViewer that skips the built-in CWD-based link handler.
+    """MarkdownViewer that routes link clicks through the App.
 
-    Why: the base class loads `[..](other.md)` via its navigator, which resolves
+    The base class loads `[..](other.md)` via its navigator, which resolves
     against the process CWD instead of the current document's directory. We
-    route link clicks ourselves from the App so paths resolve relative to the
-    file being viewed.
-
-    It also swaps in `_DiffMarkdown` so ```diff fences stay colourized across
-    stylesheet re-applies (see `_DiffMarkdownFence`).
+    suppress that handler so the click bubbles to the App, which resolves paths
+    relative to the file being viewed.
     """
-
-    def compose(self) -> ComposeResult:
-        # Mirror MarkdownViewer.compose, but with our diff-aware document.
-        markdown = _DiffMarkdown(parser_factory=self._parser_factory, open_links=self._open_links)
-        markdown.can_focus = True
-        yield markdown
-        yield MarkdownTableOfContents(markdown)
 
     async def _on_markdown_link_clicked(self, message: Markdown.LinkClicked) -> None:
         # prevent_default() suppresses MarkdownViewer's base handler in the
@@ -119,8 +62,10 @@ class MdViewerApp(App):
         Binding("ctrl+u", "scroll_half_up", "Half page up", show=False),
         Binding("g", "scroll_home", "Top", show=False),
         Binding("G", "scroll_end", "Bottom", show=False),
-        Binding("n", "next_heading", "Next heading", show=True),
-        Binding("p", "prev_heading", "Prev heading", show=True),
+        Binding("n", "next_heading", "Next file", show=True),
+        Binding("p", "prev_heading", "Prev file", show=True),
+        Binding("s", "next_hunk", "Next hunk", show=True),
+        Binding("S", "prev_hunk", "Prev hunk", show=False),
         Binding("t", "open_toc", "TOC", show=True),
         Binding("b,left", "go_back", "Back", show=True),
         Binding("v", "expand_selection", "Expand sel", show=True),
@@ -135,9 +80,15 @@ class MdViewerApp(App):
         *,
         content: str | None = None,
         base_dir: Path | None = None,
+        diff_files: list[FileDiff] | None = None,
     ) -> None:
         super().__init__()
         self._history: list[tuple[Path, float]] = []
+        # Parsed diff model when the document is a whole unified diff; used by
+        # `_inject_diff_hunks` to render each ```diff placeholder fence as a
+        # delta-styled `DiffHunk` (the model carries each hunk's file path so
+        # code can be syntax-highlighted in its language).
+        self._diff_files = diff_files
         # Semantic-selection ladder state (see mdview.selection). `_sel_scopes`
         # is the expansion ladder for the current anchor; `_sel_index` is the
         # active rung. All None/0 means no active semantic selection.
@@ -178,6 +129,7 @@ class MdViewerApp(App):
             return
         await self._inject_images()
         await self._inject_mermaid()
+        await self._inject_diff_hunks()
 
     async def _inject_images(self) -> None:
         viewer = self.query_one(MarkdownViewer)
@@ -211,6 +163,36 @@ class MdViewerApp(App):
             if image_widget is None:
                 continue
             await viewer.document.mount(image_widget, after=fence)
+            await fence.remove()
+
+    async def _inject_diff_hunks(self) -> None:
+        """Swap each ```diff fence for a delta-styled `DiffHunk` widget.
+
+        For a whole-document diff the parsed model (`self._diff_files`) supplies
+        each hunk and its file path (so code is highlighted in its language); the
+        fences and the flattened hunks line up one-for-one because
+        `diff_to_markdown` emits exactly one fence per hunk, in order. A ```diff
+        fence authored inside ordinary Markdown has no model, so its body is
+        parsed standalone and rendered without a known language.
+        """
+        viewer = self.query_one(MarkdownViewer)
+        if self._diff_files is not None:
+            # A file heading and its hunks read as one unit, so tag the headings
+            # for the CSS that drops their bottom margin (the @@ hunk header then
+            # sits directly under the file heading instead of after a blank row).
+            for header in viewer.document.query(MarkdownHeader):
+                header.add_class("diff-file")
+        fences = [
+            f for f in viewer.document.query(MarkdownFence) if (f.lexer or "").lower() == "diff"
+        ]
+        if not fences:
+            return
+        if self._diff_files is not None:
+            pairs = [(hunk, file.path) for file in self._diff_files for hunk in file.hunks]
+        else:
+            pairs = [(parse_hunk_lines(f.code), None) for f in fences]
+        for fence, (hunk, file_path) in zip(fences, pairs):
+            await viewer.document.mount(DiffHunk(hunk, file_path=file_path), after=fence)
             await fence.remove()
 
     def _render_mermaid_fence(self, code: str, mmdc: str) -> Image | None:
@@ -305,6 +287,7 @@ class MdViewerApp(App):
         self.title = path.name
         await self._inject_images()
         await self._inject_mermaid()
+        await self._inject_diff_hunks()
         if anchor:
             self.call_after_refresh(viewer.document.goto_anchor, anchor)
         else:
@@ -384,17 +367,23 @@ class MdViewerApp(App):
         self.push_screen(TocScreen(viewer, toc_data))
 
     def action_next_heading(self) -> None:
-        self._jump_heading(direction=1)
+        self._jump_to(MarkdownHeader, direction=1)
 
     def action_prev_heading(self) -> None:
-        self._jump_heading(direction=-1)
+        self._jump_to(MarkdownHeader, direction=-1)
 
-    def _jump_heading(self, *, direction: int) -> None:
+    def action_next_hunk(self) -> None:
+        self._jump_to(DiffHunk, direction=1)
+
+    def action_prev_hunk(self) -> None:
+        self._jump_to(DiffHunk, direction=-1)
+
+    def _jump_to(self, widget_type: type[Widget], *, direction: int) -> None:
         viewer = self.query_one(MarkdownViewer)
-        headings = list(viewer.document.query(MarkdownHeader))
-        if not headings:
+        targets = list(viewer.document.query(widget_type))
+        if not targets:
             return
-        positions = sorted(h.virtual_region.y for h in headings)
+        positions = sorted(w.virtual_region.y for w in targets)
         current = viewer.scroll_y
         threshold = 1  # tolerate sub-cell rounding so "next" doesn't snap to current
         if direction > 0:

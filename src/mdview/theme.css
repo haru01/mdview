@@ -45,6 +45,13 @@ MarkdownH2 {
     border-bottom: heavy $orange 60%;
 }
 
+/* In a whole-diff document, a file heading and its hunks are one unit: drop the
+ * heading's bottom margin so the first `@@` hunk header hugs the file banner
+ * (set by app._inject_diff_hunks). */
+MarkdownH2.diff-file {
+    margin: 1 0 0 0;
+}
+
 MarkdownH3 {
     color: $orange;
     text-style: bold;
