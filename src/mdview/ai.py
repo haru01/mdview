@@ -8,6 +8,7 @@ in the file being viewed rather than the surrounding repository.
 from __future__ import annotations
 
 import asyncio
+import re
 import shutil
 from pathlib import Path
 
@@ -56,29 +57,62 @@ def build_prompt(
     )
 
 
-async def ask_claude(
-    selection: str,
-    question: str,
-    document: str,
-    *,
-    claude: str,
-    cwd: Path,
-    svg_out_dir: Path | None = None,
-    concise_svg: bool = False,
-    timeout: float = 120.0,
-) -> str:
-    """Run the CLI in print mode with the built prompt and return its stdout.
+def build_edit_prompt(scope: str, instruction: str) -> str:
+    """Prompt asking Claude to rewrite *scope* per *instruction* and return only
+    the edited Markdown.
 
-    Args are passed as a list (no shell), so the selection/question cannot be
-    interpreted as shell syntax. When ``svg_out_dir`` is given, the prompt asks
-    Claude to save any SVG diagram into that directory so the popup can render
-    it; ``concise_svg`` additionally steers toward a fast, minimal diagram.
-    Raises AiQueryError on missing binary, timeout, non-zero exit, or empty
-    output.
+    Only the selected excerpt is sent — no surrounding-document context — and only
+    it is to be rewritten. The "Markdown only, no fences, no prose" framing keeps
+    the reply directly substitutable into the buffer; any leftover wrapping fence
+    is stripped by `strip_code_fence`.
     """
-    prompt = build_prompt(
-        selection, question, document, svg_out_dir=svg_out_dir, concise_svg=concise_svg
+    return (
+        "以下のMarkdownの抜粋を、指示に従って書き換えてください。\n\n"
+        "出力のルール:\n"
+        "- **書き換え後のMarkdownのみ**を出力すること。説明・前置き・後書きは一切付けない。\n"
+        "- 全体をコードフェンス(```)で包まないこと（本文中のコードブロックはそのまま残す）。\n"
+        "- 抜粋の体裁（見出しレベルなど）は保つこと。\n"
+        "- 指示と無関係な箇所は変更しないこと。\n\n"
+        f"# 対象の抜粋\n{scope}\n\n"
+        f"# 編集の指示\n{instruction}\n"
     )
+
+
+_OPEN_FENCE = re.compile(r"^(`{3,})([^\n`]*)$")
+
+
+def strip_code_fence(text: str) -> str:
+    """Strip a single code fence wrapping the *entire* reply, if present.
+
+    Claude sometimes wraps an "output only the Markdown" reply in one outer
+    fence (``` ``` ``` or ``` ```markdown ```). Only a fence enclosing the whole
+    text is removed, and only when its info string is empty or markdown/md — so
+    a content block like ```python is preserved. Returns *text* unchanged when
+    there is no such wrapper.
+    """
+    stripped = text.strip()
+    lines = stripped.split("\n")
+    if len(lines) < 2:
+        return text
+    opening = _OPEN_FENCE.match(lines[0].strip())
+    if opening is None:
+        return text
+    ticks, info = opening.group(1), opening.group(2).strip().lower()
+    if info not in ("", "markdown", "md"):
+        return text
+    closer = lines[-1].strip()
+    if set(closer) != {"`"} or len(closer) < len(ticks):
+        return text
+    return "\n".join(lines[1:-1])
+
+
+async def _run_claude(prompt: str, *, claude: str, cwd: Path, timeout: float) -> str:
+    """Run `claude -p <prompt>` and return its stripped stdout (shared core).
+
+    Args are passed as a list (no shell), so a selection/instruction cannot be
+    interpreted as shell syntax. Raises AiQueryError on missing binary, timeout,
+    non-zero exit, or empty output.
+    """
     try:
         proc = await asyncio.create_subprocess_exec(
             claude,
@@ -106,3 +140,46 @@ async def ask_claude(
     if not out:
         raise AiQueryError("claude produced no output")
     return out
+
+
+async def ask_claude(
+    selection: str,
+    question: str,
+    document: str,
+    *,
+    claude: str,
+    cwd: Path,
+    svg_out_dir: Path | None = None,
+    concise_svg: bool = False,
+    timeout: float = 120.0,
+) -> str:
+    """Run the CLI in print mode with the built prompt and return its stdout.
+
+    When ``svg_out_dir`` is given, the prompt asks Claude to save any SVG diagram
+    into that directory so the popup can render it; ``concise_svg`` additionally
+    steers toward a fast, minimal diagram.
+    """
+    prompt = build_prompt(
+        selection, question, document, svg_out_dir=svg_out_dir, concise_svg=concise_svg
+    )
+    return await _run_claude(prompt, claude=claude, cwd=cwd, timeout=timeout)
+
+
+async def edit_markdown(
+    scope: str,
+    instruction: str,
+    *,
+    claude: str,
+    cwd: Path,
+    timeout: float = 120.0,
+) -> str:
+    """Ask Claude to rewrite *scope* per *instruction*; return the edited Markdown.
+
+    Only *scope* (the selected text) is sent — no document context. Shares the
+    subprocess core with `ask_claude` but uses the edit prompt and strips any outer
+    code fence so the result is directly substitutable into the buffer. Raises
+    AiQueryError on the same failures as `ask_claude`.
+    """
+    prompt = build_edit_prompt(scope, instruction)
+    out = await _run_claude(prompt, claude=claude, cwd=cwd, timeout=timeout)
+    return strip_code_fence(out)

@@ -37,8 +37,11 @@ from mdview.ai import AiQueryError, ask_claude, find_claude
 from mdview.ask_ai import AskAiScreen
 from mdview.command import parse_command
 from mdview.diff import FileDiff, parse_hunk_lines
+from mdview.diff_preview import DiffPreviewScreen
 from mdview.diff_widget import DiffHunk
 from mdview.diffview import render_hunk
+from mdview.edit_apply import replace_line_range, selection_block_range
+from mdview.edit_input import EditInstructionScreen
 from mdview.eventflow import parse_flow_dsl
 from mdview.eventflow_widget import EventFlow
 from mdview.help import HelpScreen
@@ -46,7 +49,12 @@ from mdview.image_zoom import ZoomableImage
 from mdview.mermaid import MermaidRenderError, find_mmdc, render_mermaid
 from mdview.search import compile_query
 from mdview.section_insight import SectionInsightScreen
-from mdview.selection import ATOMIC_BLOCKS, build_scopes, find_leaf_block, section_source
+from mdview.selection import (
+    ATOMIC_BLOCKS,
+    build_scopes,
+    find_leaf_block,
+    section_source,
+)
 from mdview.svg import SvgRenderError, extract_svgs, rasterize_svg
 from mdview.toc import TocScreen
 
@@ -115,11 +123,11 @@ class _MdViewer(MarkdownViewer):
 class _CommandLine(Input):
     """The unified `/`-search / `:`-command line (less/vim-style).
 
-    The leading `/` or `:` is *part of the editable value*, not a fixed prompt,
-    so Backspace deletes it and you can retype the other prefix to switch modes
-    mid-edit. The mode is decided from the first character on submit (see
-    `app._run_cmdline`). Esc stops editing here — bound on the focused widget so
-    it doesn't bubble to the App's `cancel` (which clears the search/selection).
+    The `/` or `:` is a fixed, non-editable prompt label (`#cmdline-prompt`); this
+    field holds only the pattern/command, and the mode is tracked in
+    `app._cmdline_mode` (set when the line opens). Esc stops editing here — bound
+    on the focused widget so it doesn't bubble to the App's `cancel` (which clears
+    the search/selection).
     """
 
     BINDINGS = [Binding("escape", "cancel_edit", "Cancel", show=False)]
@@ -178,6 +186,7 @@ class MdViewerApp(App):
         Binding("v", "expand_selection", "Expand sel", show=True),
         Binding("V", "shrink_selection", "Shrink sel", show=False),
         Binding("h", "ask_ai", "Ask AI", show=True),
+        Binding("w", "edit_selection", "Edit sel", show=True),
         # help
         Binding("question_mark", "help", "Help", show=True),
     ]
@@ -213,6 +222,10 @@ class MdViewerApp(App):
         # (headings stay on `]`/`[`). `_search_index` is the current match
         # (highlighted distinctly so a jump is visible even when on-screen).
         self._search_query: str = ""
+        # Which mode the command line is in ("search" → `/`, "command" → `:`),
+        # set when it opens. The `/`/`:` prompt is a fixed, non-editable label
+        # (see `_open_cmdline`), so dispatch reads this rather than the first char.
+        self._cmdline_mode: str = "search"
         # `_search_hits` is one entry per matched substring (block, offset span,
         # and the line index of the match within the block so n/N can scroll to
         # the exact line, not just the block top); `n`/`N` step through it one
@@ -241,6 +254,14 @@ class MdViewerApp(App):
         self._insight_running: int = 0
         self._insight_spinner_frame: int = 0
         self._insight_timer: Timer | None = None
+        # AI-editing state (the `claude -p` edit loop). `_disk_baseline` is the
+        # text last read from / written to disk; the document is "dirty" whenever
+        # the live source differs from it (so the quit guard and `:w` are exact).
+        # `_undo_stack` holds whole-document snapshots taken before each applied
+        # edit; `_editing` guards against a stale result landing after navigation.
+        self._disk_baseline: str = ""
+        self._undo_stack: list[str] = []
+        self._editing: bool = False
         if content is not None:
             # stdin has no source directory, so relative images/links resolve
             # against base_dir (defaults to CWD). Stash the text in the tempdir
@@ -265,22 +286,22 @@ class MdViewerApp(App):
         # selects search vs command mode (see _run_cmdline); the match
         # count/status sits at the right.
         with Horizontal(id="cmdline-bar"):
-            yield _CommandLine(placeholder="/ 検索   : コマンド", id="cmdline")
+            # less/vim-style: the `/` or `:` prompt is a fixed, non-editable label;
+            # the input holds only the pattern/command (so a typed command can't
+            # eat its own prefix). The mode is tracked in `_cmdline_mode`.
+            yield Static("", id="cmdline-prompt")
+            yield _CommandLine(placeholder="検索 / コマンド", id="cmdline")
             yield Static("", id="cmdline-count")
 
     async def on_mount(self) -> None:
-        viewer = self.query_one(MarkdownViewer)
         self.title = self._display_name
         try:
-            await viewer.document.load(self._md_path)
+            text = self._md_path.read_text(encoding="utf-8")
         except OSError as e:
             self.exit(message=f"mdview: failed to load {self._md_path}: {e}")
             return
-        await self._inject_images()
-        await self._inject_mermaid()
-        await self._inject_diff_hunks()
-        await self._inject_event_flows()
-        await self._inject_section_insights()
+        await self._render_source(text)
+        self._disk_baseline = text
 
     async def _inject_images(self) -> None:
         viewer = self.query_one(MarkdownViewer)
@@ -532,6 +553,103 @@ class MdViewerApp(App):
         suffix = Content.from_markup(f"{gap}[@click=app.section_insight('{hid}')]{glyph}[/]")
         heading.set_content(base + suffix)
 
+    # --- AI edit loop (`w` on a text selection) ----------------------------
+
+    def action_edit_selection(self) -> None:
+        """Edit the current selection with AI (`w`). Block-unit selections only.
+
+        Only a whole-block (semantic-ladder / `v` / click) selection maps cleanly
+        back to source lines; a freeform partial drag, or a selected diff hunk /
+        event flow (no `source_range`), is refused with a notice. Only the selected
+        text is sent to the LLM and only it is the change target. A whole section
+        is editable by expanding the selection (`v`) up to the section scope first.
+        """
+        selections = dict(getattr(self.screen, "selections", {}) or {})
+        if not selections:
+            self.notify("編集するテキストを選択してください", severity="warning")
+            return
+        document = self.query_one(MarkdownViewer).document
+        whole_block = all(sel == SELECT_ALL for sel in selections.values())
+        unmappable_atomic = any(
+            isinstance(w, ATOMIC_BLOCKS) and getattr(w, "source_range", None) is None
+            for w in selections
+        )
+        ranges = [
+            (w.source_range[0], w.source_range[1])
+            for w in selections
+            if getattr(w, "source_range", None) is not None
+        ]
+        span = (
+            selection_block_range(ranges, document.source)
+            if whole_block and not unmappable_atomic
+            else None
+        )
+        if span is None:
+            self.notify(
+                "この選択範囲は編集できません。ブロック単位で選択してください（v で拡大）",
+                severity="warning",
+            )
+            return
+        lines = document.source.splitlines(keepends=True)
+        scope = "".join(lines[span[0] : span[1]])
+        self._start_edit(scope, span, label="選択範囲")
+
+    def _start_edit(self, scope: str, span: tuple[int, int], *, label: str) -> None:
+        """Open the instruction box for *scope*, then chain to the diff preview.
+
+        *span* is the source line range the accepted edit will replace. Only the
+        selected *scope* is sent to the LLM (no surrounding document context); on a
+        non-empty edited result that actually differs, a `DiffPreviewScreen` is
+        shown and acceptance applies the splice.
+        """
+        claude = self._insight_claude or find_claude()
+        if claude is None:
+            self.notify("claude CLI が見つかりません", severity="error")
+            return
+        self.push_screen(
+            EditInstructionScreen(scope, claude=claude, cwd=self._md_dir, label=label),
+            callback=lambda edited: self._on_edit_instructed(scope, span, edited, label),
+        )
+
+    def _on_edit_instructed(
+        self, scope: str, span: tuple[int, int], edited: str | None, label: str
+    ) -> None:
+        if not edited:  # cancelled, or no edit produced
+            return
+        # Compare/preview on newline-stripped text: `replace_line_range` re-adds the
+        # section's trailing blank line on apply, so an edit that only differs in
+        # trailing whitespace is a true no-op and must not open a noisy preview.
+        original, proposed = scope.rstrip("\n"), edited.rstrip("\n")
+        if original == proposed:
+            self.notify("変更はありませんでした")
+            return
+        self.push_screen(
+            DiffPreviewScreen(
+                original, proposed, label=label, file_path=self._md_path.name
+            ),
+            callback=lambda accept: self._on_edit_decided(span, edited, bool(accept)),
+        )
+
+    def _on_edit_decided(
+        self, span: tuple[int, int], edited: str, accept: bool
+    ) -> None:
+        if not accept:
+            return
+        source = self.query_one(MarkdownViewer).document.source
+        new_source = replace_line_range(source, span[0], span[1], edited)
+        if new_source == source:
+            self.notify("変更はありませんでした")
+            return
+        self._undo_stack.append(source)
+        self.run_worker(self._rerender_preserving_scroll(new_source), exclusive=True)
+
+    async def _rerender_preserving_scroll(self, text: str) -> None:
+        """Re-render *text* (an edit/undo) while keeping the reader's scroll y."""
+        viewer = self.query_one(MarkdownViewer)
+        y = viewer.scroll_y
+        await self._render_source(text)
+        viewer.scroll_to(y=y, animate=False)
+
     def _render_mermaid_fence(self, code: str, mmdc: str) -> Image | None:
         digest = hashlib.sha1(code.encode("utf-8")).hexdigest()[:12]
         png_path = Path(self._tempdir.name) / f"mermaid-{digest}.png"
@@ -612,18 +730,19 @@ class MdViewerApp(App):
         if await self._load_file(path, anchor):
             self._history.append(prev)
 
-    async def _load_file(self, path: Path, anchor: str = "") -> bool:
+    async def _render_source(self, text: str) -> None:
+        """(Re)render *text* into the viewer and re-run the enhancement passes.
+
+        Shared by initial load, link navigation, and the in-memory AI edit loop —
+        anything that needs to (re)build the rendered widget tree from a source
+        string. Textual's `document.update` reparses straight from the string
+        (its `load` is just `read_text` + `update`), so this never touches disk;
+        callers own the file I/O. Any active search/insight state is dropped first
+        because `update` discards and rebuilds every block — stale widget refs and
+        regenerated heading ids would otherwise dangle.
+        """
         viewer = self.query_one(MarkdownViewer)
-        try:
-            await viewer.document.load(path)
-        except OSError as e:
-            self.notify(f"failed to load {path}: {e}", severity="error")
-            return False
-        self._md_path = path
-        self._md_dir = path.parent
-        self.title = path.name
-        # The previous document's widgets are gone; drop any active search so
-        # n/N don't step detached hits and the bar doesn't show a stale query.
+        await viewer.document.update(text)
         self._end_search()
         self._reset_insights()
         await self._inject_images()
@@ -631,6 +750,22 @@ class MdViewerApp(App):
         await self._inject_diff_hunks()
         await self._inject_event_flows()
         await self._inject_section_insights()
+
+    async def _load_file(self, path: Path, anchor: str = "") -> bool:
+        viewer = self.query_one(MarkdownViewer)
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as e:
+            self.notify(f"failed to load {path}: {e}", severity="error")
+            return False
+        self._md_path = path
+        self._md_dir = path.parent
+        self.title = path.name
+        await self._render_source(text)
+        # Navigating to a new document starts a fresh edit session.
+        self._disk_baseline = text
+        self._undo_stack.clear()
+        self._editing = False
         if anchor:
             self.call_after_refresh(viewer.document.goto_anchor, anchor)
         else:
@@ -803,18 +938,25 @@ class MdViewerApp(App):
 
     def action_search(self) -> None:
         """Open the command line in search mode (`/`), prefilled with the last query."""
-        self._open_cmdline("/" + self._search_query)
+        self._open_cmdline("search", self._search_query)
 
     def action_command(self) -> None:
         """Open the command line in command mode (`:`)."""
-        self._open_cmdline(":")
+        self._open_cmdline("command", "")
 
-    def _open_cmdline(self, initial: str) -> None:
+    def _open_cmdline(self, mode: str, initial: str) -> None:
+        """Open the docked command line in *mode* with the input prefilled.
+
+        The `/`/`:` indicator is a fixed label (`#cmdline-prompt`); only the
+        pattern/command goes in the editable field, so a typed `:q` stays `:q`.
+        """
+        self._cmdline_mode = mode
+        self.query_one("#cmdline-prompt", Static).update("/" if mode == "search" else ":")
         self.query_one("#cmdline-bar").display = True
         box = self.query_one("#cmdline", Input)
         box.value = initial
         box.focus()
-        box.cursor_position = len(initial)  # caret after the prefix, ready to type
+        box.cursor_position = len(initial)
 
     def action_cancel(self) -> None:
         """Esc with nothing focused: cancel transient state; never quit.
@@ -839,19 +981,17 @@ class MdViewerApp(App):
         # else: ignore an Ask AI Input.Submitted bubbling up.
 
     def _run_cmdline(self, raw: str) -> None:
-        """Dispatch the command line by its leading character: `:` → command,
-        anything else → search (a leading `/` is the prompt and is stripped)."""
-        if raw.startswith(":"):
-            self._run_command(raw[1:])
+        """Dispatch the command line by the mode it was opened in (the `/`/`:`
+        prompt is a fixed label, so the input is only the pattern/command)."""
+        if self._cmdline_mode == "command":
+            self._run_command(raw.strip())
             return
-        query = raw[1:] if raw.startswith("/") else raw
-        self._search_query = query
+        self._search_query = raw
         self._run_search()
-        # Normalise the status display to `/query` and drop focus so n/N reach
-        # the App's bindings (the viewer is can_focus=False, so we blur rather
-        # than focus it). The bar stays as a status line while a search is
-        # active; an empty query clears it (see _run_search).
-        self.query_one("#cmdline", Input).value = "/" + query
+        # Keep the bar as a status line (the `/` prompt stays) and drop focus so
+        # n/N reach the App's bindings (the viewer is can_focus=False, so we blur
+        # rather than focus it). An empty query clears the search (see _run_search).
+        self.query_one("#cmdline", Input).value = raw
         self.set_focus(None)
 
     def _run_command(self, raw: str) -> None:
@@ -860,17 +1000,71 @@ class MdViewerApp(App):
         self.query_one("#cmdline-bar").display = False
         self.set_focus(None)
         if command == "quit":
+            self.action_quit()  # honours the unsaved-changes guard
+        elif command == "force_quit":
             self.exit()  # exit() is sync; App.action_quit is a coroutine
+        elif command == "write":
+            self._write_file()
+        elif command == "write_quit":
+            if self._write_file():
+                self.exit()
+        elif command == "undo":
+            self._undo()
         elif command == "help":
             self.action_help()
         elif raw.strip():
             self.notify(f"未知のコマンド: :{raw.strip()}", severity="warning")
 
+    def _is_dirty(self) -> bool:
+        """Whether the live buffer differs from what's on disk (`:w` baseline)."""
+        return self.query_one(MarkdownViewer).document.source != self._disk_baseline
+
+    def action_quit(self) -> None:
+        """Quit, but guard against discarding unsaved AI edits (`:q!` forces it)."""
+        if self._is_dirty():
+            self.notify(
+                "未保存の変更があります (:w で保存 / :q! で破棄)", severity="warning"
+            )
+            return
+        self.exit()
+
+    def _write_file(self) -> bool:
+        """Write the live buffer to disk (`:w`). Returns True on success.
+
+        A stdin document has no real target file, so it is refused. On an OS error
+        the buffer stays dirty (so the quit guard still fires and the user isn't
+        misled into thinking it saved).
+        """
+        if self._display_name == "(stdin)":
+            self.notify(
+                "標準入力から開いた文書は保存できません (:q! で終了)", severity="warning"
+            )
+            return False
+        source = self.query_one(MarkdownViewer).document.source
+        try:
+            self._md_path.write_text(source, encoding="utf-8")
+        except OSError as e:
+            self.notify(f"保存に失敗しました: {e}", severity="error")
+            return False
+        self._disk_baseline = source
+        self.notify(f"保存しました: {self._md_path.name}")
+        return True
+
+    def _undo(self) -> None:
+        """Revert the last applied edit (`:undo`)."""
+        if not self._undo_stack:
+            self.notify("元に戻す変更はありません")
+            return
+        previous = self._undo_stack.pop()
+        self.run_worker(self._rerender_preserving_scroll(previous), exclusive=True)
+
     def _cancel_cmdline_edit(self) -> None:
         """Esc while editing: stop editing without quitting. If a search is
-        active, restore its `/query` status line; otherwise hide the bar."""
+        active, restore its `/`-prompt status line; otherwise hide the bar."""
         if self._search_hits:
-            self.query_one("#cmdline", Input).value = "/" + self._search_query
+            self._cmdline_mode = "search"
+            self.query_one("#cmdline-prompt", Static).update("/")
+            self.query_one("#cmdline", Input).value = self._search_query
         else:
             self.query_one("#cmdline-bar").display = False
         self.set_focus(None)

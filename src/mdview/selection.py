@@ -145,6 +145,29 @@ def _section_rungs(leaf: Widget, document: Markdown) -> list[list[Widget]]:
     return rungs
 
 
+def section_line_range(
+    heading: MarkdownHeader, document: Markdown
+) -> tuple[int, int] | None:
+    """The ``[start, end)`` source-line range of ``heading``'s section.
+
+    Same span as `section_source` (the heading line down to just before the next
+    heading of equal or higher level, or EOF). The range indexes
+    ``document.source.splitlines(keepends=True)`` — the basis of the blocks'
+    ``source_range`` — so the caller can splice the section out of / back into the
+    buffer (the AI edit loop). Returns None if ``heading`` is not a top-level
+    document child.
+    """
+    children = list(document.children)
+    if heading not in children:
+        return None
+    index = children.index(heading)
+    end = _section_end(children, index, getattr(heading, "LEVEL", 0))
+    lines = document.source.splitlines(keepends=True)
+    start_line = heading.source_range[0]
+    end_line = children[end].source_range[0] if end < len(children) else len(lines)
+    return (start_line, end_line)
+
+
 def section_source(heading: MarkdownHeader, document: Markdown) -> str:
     """The raw Markdown of ``heading``'s section.
 
@@ -156,15 +179,11 @@ def section_source(heading: MarkdownHeader, document: Markdown) -> str:
     never replaced, so their ``source_range`` is intact). Returns "" if
     ``heading`` is not a top-level document child.
     """
-    children = list(document.children)
-    if heading not in children:
+    span = section_line_range(heading, document)
+    if span is None:
         return ""
-    index = children.index(heading)
-    end = _section_end(children, index, getattr(heading, "LEVEL", 0))
     lines = document.source.splitlines(keepends=True)
-    start_line = heading.source_range[0]
-    end_line = children[end].source_range[0] if end < len(children) else len(lines)
-    return "".join(lines[start_line:end_line])
+    return "".join(lines[span[0] : span[1]])
 
 
 def _section_end(children: list[Widget], start: int, level: int) -> int:

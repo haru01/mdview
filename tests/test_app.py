@@ -1507,12 +1507,12 @@ _MULTI_FILE_DIFF = "".join(
 
 
 async def _submit_search(pilot, query: str) -> None:
-    """Open the command line in search mode, type `/query`, and submit it."""
+    """Open the command line in search mode, type the query, and submit it."""
     from textual.widgets import Input
 
     await pilot.press("slash")
     await pilot.pause()
-    pilot.app.query_one("#cmdline", Input).value = "/" + query
+    pilot.app.query_one("#cmdline", Input).value = query
     await pilot.press("enter")
     await pilot.pause()
 
@@ -1564,10 +1564,10 @@ def test_navigation_clears_active_search(tmp_path) -> None:
 
 
 def test_search_bar_shows_less_style_slash_prompt() -> None:
-    """The bar reads like less: `/` is the editable leading char of the field."""
+    """The bar reads like less: a fixed `/` prompt label, empty editable field."""
     import asyncio
 
-    from textual.widgets import Input
+    from textual.widgets import Input, Static
 
     async def driver() -> None:
         app = MdViewerApp(content="# T\n\nalpha beta\n")
@@ -1576,34 +1576,32 @@ def test_search_bar_shows_less_style_slash_prompt() -> None:
             await pilot.pause()
             await pilot.press("slash")
             await pilot.pause()
-            box = app.query_one("#cmdline", Input)
-            assert box.value == "/", "the field opens with a `/` prefix"
-            assert box.cursor_position == 1, "caret sits after the `/`"
+            assert str(app.query_one("#cmdline-prompt", Static).render()) == "/"
+            assert app.query_one("#cmdline", Input).value == "", "field holds only the query"
 
     asyncio.run(driver())
 
 
-def test_cmdline_backspace_deletes_prefix_and_switches_mode() -> None:
-    """The leading `/` is editable: Backspace removes it, then `:` switches mode."""
+def test_cmdline_prompt_label_reflects_mode() -> None:
+    """`/` and `:` set a fixed prompt label; the editable field stays content-only
+    (a typed char never overwrites the prompt)."""
     import asyncio
 
-    from textual.widgets import Input
+    from textual.widgets import Input, Static
 
     async def driver() -> None:
         app = MdViewerApp(content="# T\n\nalpha\n")
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
             await pilot.pause()
-            await pilot.press("slash")
-            await pilot.pause()
+            prompt = app.query_one("#cmdline-prompt", Static)
             box = app.query_one("#cmdline", Input)
-            assert box.value == "/"
-            await pilot.press("backspace")
-            await pilot.pause()
-            assert box.value == "", "Backspace deletes the `/` prefix"
             await pilot.press("colon")
             await pilot.pause()
-            assert box.value == ":", "can then type `:` to switch to command mode"
+            assert str(prompt.render()) == ":" and app._cmdline_mode == "command"
+            await pilot.press("w")
+            await pilot.pause()
+            assert box.value == "w", "the typed char does not overwrite the `:` prompt"
 
     asyncio.run(driver())
 
@@ -1623,7 +1621,10 @@ def test_search_reopens_prefilled_with_slash_and_last_query() -> None:
             assert app._search_hits, "search is active"
             await pilot.press("slash")
             await pilot.pause()
-            assert app.query_one("#cmdline", Input).value == "/alpha"
+            assert app.query_one("#cmdline", Input).value == "alpha", "field prefilled"
+            from textual.widgets import Static
+
+            assert str(app.query_one("#cmdline-prompt", Static).render()) == "/"
 
     asyncio.run(driver())
 
@@ -1822,7 +1823,7 @@ async def _submit_command(pilot, text: str) -> None:
 
     await pilot.press("colon")
     await pilot.pause()
-    pilot.app.query_one("#cmdline", Input).value = ":" + text
+    pilot.app.query_one("#cmdline", Input).value = text
     await pilot.press("enter")
     await pilot.pause()
 
@@ -1846,6 +1847,56 @@ def test_colon_q_quits() -> None:
             await pilot.press("q")
             await pilot.pause()
             assert exits == [True, True], "single `q` should also exit"
+
+    asyncio.run(driver())
+
+
+def test_typed_colon_q_quits_via_keystrokes() -> None:
+    """Regression: opening with `:` then typing `q` runs the *command* (quit), not
+    a search for "q". The fixed prompt keeps the field content-only (`q`)."""
+    import asyncio
+
+    from textual.widgets import Input
+
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            exits: list[bool] = []
+            app.exit = lambda *a, **k: exits.append(True)  # type: ignore[method-assign]
+            await pilot.press("colon")
+            await pilot.press("q")
+            await pilot.pause()
+            assert app.query_one("#cmdline", Input).value == "q", "field is content-only"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert exits == [True], "typed `:q` should quit, not search"
+
+    asyncio.run(driver())
+
+
+def test_typed_slash_search_via_keystrokes() -> None:
+    """Opening with `/` then typing a pattern runs a search."""
+    import asyncio
+
+    from textual.widgets import Input
+
+    async def driver() -> None:
+        app = MdViewerApp(content="# T\n\nalpha beta alpha\n")
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("slash")
+            for ch in "alpha":
+                await pilot.press(ch)
+            await pilot.pause()
+            assert app.query_one("#cmdline", Input).value == "alpha"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app._search_hits, "typed `/alpha` should find matches"
 
     asyncio.run(driver())
 
