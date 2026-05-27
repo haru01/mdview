@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import hashlib
-import re
 import tempfile
+from contextlib import suppress
 from pathlib import Path
+from time import monotonic
 from urllib.parse import unquote
+
+import regex
 
 from markdown_it.token import Token
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
+from textual.css.query import NoMatches
 from textual.selection import SELECT_ALL, Selection
 from textual.widget import Widget
 from textual.widgets import Input, Label, Markdown, MarkdownViewer, Static
@@ -45,6 +49,11 @@ _MARKDOWN_EXTS = {".md", ".markdown", ".mdown", ".mkd"}
 # `Content.highlight_regex` and Rich `Text.highlight_regex` (the DiffHunk path).
 _MATCH_HL = "on #335c46"
 _CURRENT_HL = "bold on #4ebf71"
+
+# Wall-clock budget for one search scan. A catastrophic-backtracking pattern
+# (e.g. `(a+)+$`) would otherwise hang the UI thread, so each `finditer` is given
+# the remaining budget as a `timeout=` and a `TimeoutError` aborts the search.
+_SEARCH_BUDGET_S = 1.0
 
 
 class _MdViewer(MarkdownViewer):
@@ -139,7 +148,7 @@ class MdViewerApp(App):
         self._search_index: int = 0
         # The compiled pattern (for re-highlighting on n/p) and the per-block
         # originals captured before washing, so highlights can be undone cleanly.
-        self._search_pattern: re.Pattern[str] | None = None
+        self._search_pattern: regex.Pattern[str] | None = None
         self._search_originals: dict[Widget, object] = {}
         # TemporaryDirectory has its own finalizer that runs at interpreter
         # shutdown; no atexit.register needed. Registering here would pin the
@@ -165,12 +174,11 @@ class MdViewerApp(App):
         # ourselves instead of letting Textual hand them to the OS browser.
         yield _MdViewer(show_table_of_contents=False, open_links=False)
         # The `/` search bar lives docked at the bottom, hidden until invoked
-        # (theme.css sets `display: none`; action_search flips it on).
+        # (theme.css sets `display: none`; action_search flips it on). A leading
+        # `/` prompt makes it read like less: the typed pattern follows the slash.
         with Horizontal(id="search-bar"):
-            yield _SearchInput(
-                placeholder="検索 (正規表現 / Enterで確定 / Escで閉じる)",
-                id="search-input",
-            )
+            yield Static("/", id="search-prompt")
+            yield _SearchInput(placeholder="正規表現", id="search-input")
             yield Static("", id="search-count")
 
     async def on_mount(self) -> None:
@@ -339,6 +347,9 @@ class MdViewerApp(App):
         self._md_path = path
         self._md_dir = path.parent
         self.title = path.name
+        # The previous document's widgets are gone; drop any active search so
+        # n/p don't step detached hits and the bar doesn't show a stale query.
+        self._end_search()
         await self._inject_images()
         await self._inject_mermaid()
         await self._inject_diff_hunks()
@@ -504,16 +515,31 @@ class MdViewerApp(App):
             return
         hits: list[tuple[Widget, int, int, int]] = []
         widgets: list[Widget] = []
-        for w in viewer.document.query("*"):
-            if not isinstance(w, ATOMIC_BLOCKS):
-                continue
-            text = _search_text(w)
-            spans = [m.span() for m in pattern.finditer(text) if m.end() > m.start()]
-            if spans:
-                widgets.append(w)
-                # line index of each match within the block, so n/p can scroll to
-                # the matched line (preformatted blocks are one row per line).
-                hits.extend((w, start, end, text.count("\n", 0, start)) for start, end in spans)
+        deadline = monotonic() + _SEARCH_BUDGET_S
+        try:
+            for w in viewer.document.query("*"):
+                if not isinstance(w, ATOMIC_BLOCKS):
+                    continue
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                text = _search_text(w)
+                spans = [
+                    m.span()
+                    for m in pattern.finditer(text, timeout=remaining)
+                    if m.end() > m.start()
+                ]
+                if spans:
+                    widgets.append(w)
+                    # line index of each match within the block, so n/p can scroll
+                    # to the matched line (preformatted blocks are one row per line).
+                    hits.extend((w, s, e, text.count("\n", 0, s)) for s, e in spans)
+        except TimeoutError:
+            # A pathological pattern (catastrophic backtracking) blew the budget.
+            self._reset_search_state()
+            count.update("パターンが複雑すぎます")
+            self.notify("検索パターンが複雑すぎます", severity="warning")
+            return
         self._search_hits = hits
         self._search_matches = widgets
         if not hits:
@@ -567,7 +593,7 @@ class MdViewerApp(App):
         )
 
     def _paint_widget(
-        self, widget: Widget, pattern: re.Pattern[str], *, current_span: tuple[int, int] | None
+        self, widget: Widget, pattern: regex.Pattern[str], *, current_span: tuple[int, int] | None
     ) -> None:
         """Wash every match in *widget* subtly; brighten *current_span* if given."""
         if isinstance(widget, DiffHunk):
@@ -580,7 +606,10 @@ class MdViewerApp(App):
             content = widget._highlighted_code.highlight_regex(pattern, style=_MATCH_HL)
             if current_span is not None:
                 content = content.stylize(_CURRENT_HL, *current_span)
-            widget.query_one("#code-content", Label).update(content)
+            # The Label can be absent in some fence states — Textual's own
+            # MarkdownFence.set_content guards the same query, so we do too.
+            with suppress(NoMatches):
+                widget.query_one("#code-content", Label).update(content)
         elif isinstance(widget, MarkdownBlock):
             original = self._search_originals.setdefault(widget, widget._content)
             content = original.highlight_regex(pattern, style=_MATCH_HL)
@@ -593,7 +622,8 @@ class MdViewerApp(App):
         if isinstance(widget, DiffHunk):
             widget.update(render_hunk(widget._hunk, file_path=widget._file_path))
         elif isinstance(widget, MarkdownFence):
-            widget.query_one("#code-content", Label).update(widget._highlighted_code)
+            with suppress(NoMatches):
+                widget.query_one("#code-content", Label).update(widget._highlighted_code)
         elif isinstance(widget, MarkdownBlock):
             original = self._search_originals.get(widget)
             if original is not None:
@@ -611,6 +641,21 @@ class MdViewerApp(App):
         self._reset_search_state()
         for w in self.query_one(MarkdownViewer).document.query(".search-current"):
             w.remove_class("search-current")
+
+    def _end_search(self) -> None:
+        """Drop any active search on document navigation.
+
+        The old document's matched widgets are gone with the swapped-out tree, so
+        there is nothing to restore — just forget the stale hits/highlights and
+        hide the bar (the matched-widget refs would otherwise leave `n`/`p`
+        stepping detached widgets in the new document). `_search_query` is kept so
+        `/` reopens prefilled.
+        """
+        self._reset_search_state()
+        self._search_originals.clear()
+        self._search_pattern = None
+        self.query_one("#search-count", Static).update("")
+        self.query_one("#search-bar").display = False
 
     def on_click(self, event: events.Click) -> None:
         """Mouse-driven semantic selection.
@@ -693,6 +738,11 @@ def _search_text(widget: Widget) -> str:
     text (gutter included — `@@` headers and code still match, and offsets line
     up with what's drawn), and every other Markdown block's rendered `Content`
     (heading text without the leading `##`, etc.).
+
+    Known limitation: a `MarkdownTable`'s own `_content` is empty (its cell text
+    lives in child `MarkdownTableContent` widgets), so table cell text is not
+    searchable. Highlighting it would mean re-rendering the table's cells, which
+    isn't worth the complexity here.
     """
     if isinstance(widget, DiffHunk):
         return render_hunk(widget._hunk, file_path=widget._file_path).plain

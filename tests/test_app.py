@@ -1307,6 +1307,71 @@ async def _submit_search(pilot, query: str) -> None:
     await pilot.pause()
 
 
+def test_search_aborts_on_catastrophic_pattern() -> None:
+    """A backtracking-pathological regex aborts within the budget, not hangs."""
+    import asyncio
+    import time
+
+    md = "# T\n\n" + "a" * 50 + "!\n"  # long run that defeats `(a|a)*$`
+
+    async def driver() -> None:
+        app = MdViewerApp(content=md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            started = time.monotonic()
+            await _submit_search(pilot, "(a|a)*$")
+            assert time.monotonic() - started < 5, "search must not hang"
+            assert app._search_hits == [], "pathological search yields no hits"
+            assert "複雑" in str(app.query_one("#search-count").render())
+
+    asyncio.run(driver())
+
+
+def test_navigation_clears_active_search(tmp_path) -> None:
+    """Following a link (or `b` back) drops the previous doc's search state."""
+    import asyncio
+
+    a = tmp_path / "a.md"
+    a.write_text("# A\n\napple apple here\n\n[to B](b.md)\n", encoding="utf-8")
+    b = tmp_path / "b.md"
+    b.write_text("# B\n\nbanana content\n", encoding="utf-8")
+
+    async def driver() -> None:
+        app = MdViewerApp(a)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            await _submit_search(pilot, "apple")
+            assert app._search_hits, "search should be active on doc A"
+            await app._load_file(b)  # simulate navigating to doc B
+            await pilot.pause()
+            assert app._search_hits == [], "stale hits must be cleared on nav"
+            assert app._search_matches == []
+            assert app.query_one("#search-bar").display is False, "bar hidden after nav"
+
+    asyncio.run(driver())
+
+
+def test_search_bar_shows_less_style_slash_prompt() -> None:
+    """The bar reads like less: a leading `/` prompt before the pattern."""
+    import asyncio
+
+    from textual.widgets import Static
+
+    async def driver() -> None:
+        app = MdViewerApp(content="# T\n\nalpha beta\n")
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("slash")
+            await pilot.pause()
+            prompt = app.query_one("#search-prompt", Static)
+            assert str(prompt.render()) == "/"
+
+    asyncio.run(driver())
+
+
 def test_search_double_at_matches_only_hunks() -> None:
     """`/@@` filters to the diff's hunks (file headings have a single `@`)."""
     import asyncio

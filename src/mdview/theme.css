@@ -256,7 +256,8 @@ AskAiScreen {
 
 /* ===== `/` search bar =====
  * Docked at the bottom, hidden until `/` (app.action_search flips `display`).
- * The input grows; the match count sits at the right.
+ * Reads like less: a leading `/` prompt, then the typed pattern, then the
+ * match count at the right.
  */
 
 #search-bar {
@@ -266,12 +267,20 @@ AskAiScreen {
     background: $panel;
 }
 
+/* The `/` prompt: hug the left edge with the input's pattern flush after it. */
+#search-prompt {
+    width: auto;
+    height: 1;
+    padding: 0 0 0 1;
+    color: $text-muted;
+}
+
 #search-input {
     width: 1fr;
     height: 1;
     border: none;
     background: $panel;
-    padding: 0 1;
+    padding: 0 1 0 0;
 }
 
 #search-count {

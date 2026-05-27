@@ -8,6 +8,7 @@ authors = [
 requires-python = ">=3.11"
 dependencies = [
     "cairosvg>=2.9.0",
+    "regex>=2026.5.9",
     "textual>=8.2.7",
     "textual-image[textual]>=0.12.0",
 ]
