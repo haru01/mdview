@@ -39,6 +39,8 @@ from mdview.command import parse_command
 from mdview.diff import FileDiff, parse_hunk_lines
 from mdview.diff_widget import DiffHunk
 from mdview.diffview import render_hunk
+from mdview.eventflow import parse_flow_dsl
+from mdview.eventflow_widget import EventFlow
 from mdview.help import HelpScreen
 from mdview.image_zoom import ZoomableImage
 from mdview.mermaid import MermaidRenderError, find_mmdc, render_mermaid
@@ -165,6 +167,10 @@ class MdViewerApp(App):
         Binding("ctrl+left_square_bracket", "prev_h2", "Prev section (H2)", show=False),
         Binding("right_curly_bracket", "next_hunk", "Next hunk", show=False),
         Binding("left_curly_bracket", "prev_hunk", "Prev hunk", show=False),
+        # Horizontal scroll for a wide event flow (the visible EventFlow widget).
+        # Plain left is link-back and `<`/`>` are home/end, so use shift+arrows.
+        Binding("shift+right", "flow_scroll_right", "Flow right", show=False),
+        Binding("shift+left", "flow_scroll_left", "Flow left", show=False),
         Binding("t", "open_toc", "TOC", show=True),
         # link history (b is page-up now, so back moves to Backspace/←)
         Binding("backspace,left", "go_back", "Back", show=True),
@@ -273,6 +279,7 @@ class MdViewerApp(App):
         await self._inject_images()
         await self._inject_mermaid()
         await self._inject_diff_hunks()
+        await self._inject_event_flows()
         await self._inject_section_insights()
 
     async def _inject_images(self) -> None:
@@ -337,6 +344,29 @@ class MdViewerApp(App):
             pairs = [(parse_hunk_lines(f.code), None) for f in fences]
         for fence, (hunk, file_path) in zip(fences, pairs):
             await viewer.document.mount(DiffHunk(hunk, file_path=file_path), after=fence)
+            await fence.remove()
+
+    async def _inject_event_flows(self) -> None:
+        """Swap each ```event-flow-svg fence for an `EventFlow` swimlane widget.
+
+        The fence body is the EventStorming flow DSL; `parse_flow_dsl` turns it
+        into the model, which `EventFlow` renders as colour-coded sticky-note
+        swimlanes (horizontally scrollable). A fence whose body has no lanes
+        (parse returns None) is left as a plain code block — degrade gracefully.
+        The original DSL is stashed on the widget so selecting/Ask-AI'ing the
+        flow yields readable source, not the box-art.
+        """
+        viewer = self.query_one(MarkdownViewer)
+        fences = [
+            f
+            for f in viewer.document.query(MarkdownFence)
+            if (f.lexer or "").lower() == "event-flow-svg"
+        ]
+        for fence in fences:
+            flow = parse_flow_dsl(fence.code)
+            if flow is None:
+                continue
+            await viewer.document.mount(EventFlow(flow, source=fence.code), after=fence)
             await fence.remove()
 
     async def _inject_section_insights(self) -> None:
@@ -599,6 +629,7 @@ class MdViewerApp(App):
         await self._inject_images()
         await self._inject_mermaid()
         await self._inject_diff_hunks()
+        await self._inject_event_flows()
         await self._inject_section_insights()
         if anchor:
             self.call_after_refresh(viewer.document.goto_anchor, anchor)
@@ -645,6 +676,28 @@ class MdViewerApp(App):
 
     def action_scroll_end(self) -> None:
         self.query_one(MarkdownViewer).scroll_end(animate=False)
+
+    def action_flow_scroll_right(self) -> None:
+        self._scroll_visible_flow(1)
+
+    def action_flow_scroll_left(self) -> None:
+        self._scroll_visible_flow(-1)
+
+    def _scroll_visible_flow(self, direction: int) -> None:
+        """Scroll the on-screen event flow horizontally (no-op if none visible)."""
+        flow = self._visible_event_flow()
+        if flow is not None:
+            flow.scroll_relative(x=direction * 8, animate=False)
+
+    def _visible_event_flow(self) -> EventFlow | None:
+        """The first `EventFlow` overlapping the viewer's viewport, or None."""
+        viewer = self.query_one(MarkdownViewer)
+        top, bottom = viewer.region.y, viewer.region.bottom
+        for flow in viewer.document.query(EventFlow):
+            region = flow.region
+            if region.area and region.bottom > top and region.y < bottom:
+                return flow
+        return None
 
     def action_help(self) -> None:
         # `?` / `:h` open the shortcut cheat-sheet. If it's already up (re-press

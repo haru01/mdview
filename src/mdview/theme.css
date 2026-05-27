@@ -240,6 +240,24 @@ HelpScreen {
     max-width: 100%;
 }
 
+/* EventStorming flow: swimlanes are drawn at natural width (the renderer emits a
+ * no-wrap Text), so the widget scrolls horizontally when wider than the screen
+ * (shift+left/right, mouse wheel, scrollbar) instead of wrapping. */
+EventFlow {
+    width: 1fr;
+    height: auto;
+    overflow-x: auto;
+    overflow-y: hidden;
+    margin: 1 0;
+}
+
+/* The body keeps its natural width so the container overflows (and scrolls)
+ * horizontally instead of clamping the swimlanes to the viewport. */
+EventFlow > Static {
+    width: auto;
+    height: auto;
+}
+
 /* ===== Ask AI modal ===== */
 
 AskAiScreen {

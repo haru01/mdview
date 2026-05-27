@@ -31,6 +31,7 @@ from textual.widgets._markdown import (
 )
 
 from mdview.diff_widget import DiffHunk
+from mdview.eventflow_widget import EventFlow
 
 # Smallest selectable "blocks" — widgets that render their own text.
 ATOMIC_BLOCKS: tuple[type[Widget], ...] = (
@@ -40,6 +41,7 @@ ATOMIC_BLOCKS: tuple[type[Widget], ...] = (
     MarkdownHorizontalRule,
     MarkdownTable,
     DiffHunk,  # delta-styled diff hunk (replaces a ```diff fence in the tree)
+    EventFlow,  # event-flow swimlanes (replaces an ```event-flow-svg fence)
 )
 
 # Structural containers that form intermediate expansion rungs.
