@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
 from textual import work
@@ -14,7 +13,8 @@ from mdview.ai import AiQueryError, ask_claude
 from mdview.diffview import is_diff_text, render_selection
 from mdview.image_zoom import ZoomableImage
 from mdview.scroll_modal import ScrollableModalScreen
-from mdview.svg import SvgRenderError, extract_svgs, rasterize_svg
+from mdview.svg import extract_svgs
+from mdview.svg_widgets import render_svgs_into
 
 
 class SelectionViewScreen(ScrollableModalScreen):
@@ -190,36 +190,20 @@ class AskAiScreen(ScrollableModalScreen):
         ]
 
     async def _render_svgs(self, svgs: list[str]) -> int:
-        """Rasterize each SVG via a temp file and mount it; return the count shown.
-
-        Diagrams mount above the prose (``before`` the answer Markdown) so the
-        figure leads and the text explanation follows beneath it.
-        """
+        """Rasterize each SVG and mount it above the prose (so the figure leads
+        and the explanation follows beneath it); return the count shown."""
         if not svgs:
             return 0
         scroll = self.query_one("#ask-ai-answer", VerticalScroll)
         prose = self.query_one("#ask-ai-answer-md", Markdown)
-        rendered = 0
-        for svg in svgs:
-            widget = self._svg_to_image(svg)
-            if widget is not None:
-                await scroll.mount(widget, before=prose)
-                rendered += 1
-        return rendered
-
-    def _svg_to_image(self, svg: str) -> ZoomableImage | None:
-        # Persist the SVG (and its PNG) under the app's temp dir, keyed by a hash
-        # of the markup so identical diagrams reuse the same files.
-        digest = hashlib.sha1(svg.encode("utf-8")).hexdigest()[:12]
-        svg_path = self._tmpdir / f"ask-ai-{digest}.svg"
-        png_path = self._tmpdir / f"ask-ai-{digest}.png"
-        svg_path.write_text(svg, encoding="utf-8")
-        target_width_px = max(400, (self.size.width or 80) * 12)
-        try:
-            rasterize_svg(svg_path, png_path, width_px=target_width_px)
-        except SvgRenderError:
-            return None
-        return ZoomableImage(png_path)
+        return await render_svgs_into(
+            scroll,
+            svgs,
+            self._tmpdir,
+            width_hint=max(400, (self.size.width or 80) * 12),
+            before=prose,
+            prefix="ask-ai",
+        )
 
     async def _clear_images(self) -> None:
         for image in list(self.query(ZoomableImage)):

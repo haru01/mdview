@@ -289,6 +289,26 @@ SelectionViewScreen {
     height: 1fr;
 }
 
+/* ===== Section insight modal (click a `##` heading's 💡 → 📦) ===== */
+
+SectionInsightScreen {
+    align: center middle;
+    background: $surface 60%;
+}
+
+#section-insight-dialog {
+    width: 85%;
+    height: 85%;
+    background: $panel;
+    border: round $orange;
+    padding: 1 2;
+}
+
+#section-insight-body {
+    width: 1fr;
+    height: 1fr;
+}
+
 #ask-ai-svg-toggle {
     margin: 1 0 0 0;
     border: none;

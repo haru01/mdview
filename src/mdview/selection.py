@@ -143,6 +143,28 @@ def _section_rungs(leaf: Widget, document: Markdown) -> list[list[Widget]]:
     return rungs
 
 
+def section_source(heading: MarkdownHeader, document: Markdown) -> str:
+    """The raw Markdown of ``heading``'s section.
+
+    Runs from the heading line down to just before the next heading of equal or
+    higher level (so an H2 absorbs its H3–H6 subsections), or to the end of the
+    document. Reads the *original* ``Markdown.source`` sliced by the blocks'
+    ``source_range`` — clean Markdown, not the rendered widget text — so it stays
+    correct even after images/diffs have been swapped into the tree (headings are
+    never replaced, so their ``source_range`` is intact). Returns "" if
+    ``heading`` is not a top-level document child.
+    """
+    children = list(document.children)
+    if heading not in children:
+        return ""
+    index = children.index(heading)
+    end = _section_end(children, index, getattr(heading, "LEVEL", 0))
+    lines = document.source.splitlines(keepends=True)
+    start_line = heading.source_range[0]
+    end_line = children[end].source_range[0] if end < len(children) else len(lines)
+    return "".join(lines[start_line:end_line])
+
+
 def _section_end(children: list[Widget], start: int, level: int) -> int:
     """Index just past a section that begins at ``start`` (a heading of ``level``)."""
     for j in range(start + 1, len(children)):

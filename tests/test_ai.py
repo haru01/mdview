@@ -56,6 +56,19 @@ def test_build_prompt_with_svg_dir_instructs_saving_to_that_absolute_path(
     assert ".svg" in prompt
 
 
+def test_build_prompt_concise_svg_adds_simplicity_instruction(tmp_path: Path) -> None:
+    """`concise_svg` steers Claude toward a fast, minimal diagram."""
+    svg_dir = tmp_path / "out"
+    prompt = build_prompt("s", "q", "doc", svg_out_dir=svg_dir, concise_svg=True)
+    assert "最小限の要素数" in prompt
+
+
+def test_build_prompt_concise_svg_off_by_default(tmp_path: Path) -> None:
+    """Without the flag (e.g. the Ask AI path) the simplicity note is absent."""
+    svg_dir = tmp_path / "out"
+    assert "最小限の要素数" not in build_prompt("s", "q", "doc", svg_out_dir=svg_dir)
+
+
 def test_ask_claude_returns_stdout_runs_in_cwd_and_embeds_document(tmp_path: Path) -> None:
     workdir = tmp_path / "docs"
     workdir.mkdir()

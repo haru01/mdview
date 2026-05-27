@@ -149,6 +149,53 @@ def test_build_scopes_plain_paragraph_has_no_container_rung() -> None:
     _run(driver)
 
 
+def test_section_source_returns_only_that_sections_markdown() -> None:
+    """`section_source` returns the heading line and its body as raw Markdown,
+    bounded by the next equal-or-higher heading (here: the next `##`)."""
+    from mdview.selection import section_source
+
+    async def driver(app, doc) -> None:
+        heading = _heading(doc, "リスト")
+        src = section_source(heading, doc)
+        assert src.startswith("## リスト"), src[:40]
+        # the section body is included...
+        assert "箇条書き 1" in src
+        assert "順序付き 3" in src
+        # ...but neighbouring sections are not.
+        assert "コードブロック" not in src
+        assert "段落と強調" not in src
+
+    _run(driver)
+
+
+def test_section_source_last_section_runs_to_end_of_document() -> None:
+    """The final `##` section extends to the end of the document."""
+    from mdview.selection import section_source
+
+    async def driver(app, doc) -> None:
+        heading = _heading(doc, "Mermaid")
+        src = section_source(heading, doc)
+        assert src.startswith("## Mermaid"), src[:40]
+        assert "これでサンプルは終わり" in src
+
+    _run(driver)
+
+
+def test_section_source_h2_includes_its_subsections() -> None:
+    """An H2 section absorbs its deeper (H3–H6) subsections up to the next H2."""
+    from mdview.selection import section_source
+
+    async def driver(app, doc) -> None:
+        heading = _heading(doc, "見出しの階層")
+        src = section_source(heading, doc)
+        assert "### H3 ヘッダ" in src
+        assert "###### H6 ヘッダ" in src
+        # bounded by the next H2
+        assert "## リスト" not in src
+
+    _run(driver)
+
+
 def test_build_scopes_subheading_expands_through_parent_sections() -> None:
     """A subheading grows through its own section, then the enclosing section."""
 

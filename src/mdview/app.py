@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import tempfile
+import types
 from contextlib import suppress
+from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
 from urllib.parse import unquote
@@ -10,13 +12,16 @@ from urllib.parse import unquote
 import regex
 
 from markdown_it.token import Token
-from textual import events
+from rich.cells import cell_len
+from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
+from textual.content import Content
 from textual.css.query import NoMatches
 from textual.geometry import Offset
 from textual.selection import SELECT_ALL, Selection
+from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import Input, Label, Markdown, MarkdownViewer, Static
 from textual.widgets._markdown import (
@@ -28,7 +33,7 @@ from textual.widgets._markdown import (
 )
 from textual_image.widget import Image
 
-from mdview.ai import find_claude
+from mdview.ai import AiQueryError, ask_claude, find_claude
 from mdview.ask_ai import AskAiScreen
 from mdview.command import parse_command
 from mdview.diff import FileDiff, parse_hunk_lines
@@ -38,9 +43,40 @@ from mdview.help import HelpScreen
 from mdview.image_zoom import ZoomableImage
 from mdview.mermaid import MermaidRenderError, find_mmdc, render_mermaid
 from mdview.search import compile_query
-from mdview.selection import ATOMIC_BLOCKS, build_scopes, find_leaf_block
-from mdview.svg import SvgRenderError, rasterize_svg
+from mdview.section_insight import SectionInsightScreen
+from mdview.selection import ATOMIC_BLOCKS, build_scopes, find_leaf_block, section_source
+from mdview.svg import SvgRenderError, extract_svgs, rasterize_svg
 from mdview.toc import TocScreen
+
+
+# Section insight (`##` lightbulb → treasure): the inline marker's three states
+# and the fixed prompt. Up to three sections may generate at once; a fourth
+# click is refused. The marker lives in the heading's rendered Content (so it
+# scrolls with the heading and needs no overlay); a per-heading `get_selection`
+# override keeps it out of copied/searched/AI'd text.
+_INSIGHT_GLYPHS = {"idle": "💡", "done": "📦", "error": "⚠"}
+_INSIGHT_SPINNER = "◐◓◑◒"
+_INSIGHT_MAX_CONCURRENT = 3
+_INSIGHT_QUESTION = "このセクションの内容を、図解のSVGを交えてわかりやすく解説してください。"
+# An SVG-illustrated section explanation can take longer than the Ask AI default,
+# so allow more time; `concise_svg` keeps the diagram simple to stay within it.
+_INSIGHT_TIMEOUT_S = 240.0
+
+
+@dataclass
+class _InsightState:
+    status: str = "idle"  # idle | running | done | error
+    prose: str = ""
+    svgs: list[str] = field(default_factory=list)
+
+
+def _insight_get_selection(self: MarkdownHeader, selection: Selection):
+    """Instance override for an H2 with a lightbulb: select from the *clean*
+    pre-marker content so the 💡/📦 marker never leaks into copied or AI'd text.
+    """
+    base = getattr(self, "_insight_base", None)
+    text = base.plain if base is not None else str(self._render())
+    return selection.extract(text), "\n"
 
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
@@ -189,6 +225,16 @@ class MdViewerApp(App):
         # cleanup callback for the whole process even if .run() never fires,
         # leaking the tempdir.
         self._tempdir = tempfile.TemporaryDirectory(prefix="mdview-")
+        # Section insight state (the `##` lightbulb → treasure feature). Set on
+        # load when `claude` is present; `_insight_headings` maps a heading id to
+        # its widget, `_insight_state` to its generation state. `_insight_running`
+        # caps concurrency; the spinner timer animates running markers.
+        self._insight_claude: str | None = None
+        self._insight_headings: dict[str, MarkdownHeader] = {}
+        self._insight_state: dict[str, _InsightState] = {}
+        self._insight_running: int = 0
+        self._insight_spinner_frame: int = 0
+        self._insight_timer: Timer | None = None
         if content is not None:
             # stdin has no source directory, so relative images/links resolve
             # against base_dir (defaults to CWD). Stash the text in the tempdir
@@ -227,6 +273,7 @@ class MdViewerApp(App):
         await self._inject_images()
         await self._inject_mermaid()
         await self._inject_diff_hunks()
+        await self._inject_section_insights()
 
     async def _inject_images(self) -> None:
         viewer = self.query_one(MarkdownViewer)
@@ -291,6 +338,169 @@ class MdViewerApp(App):
         for fence, (hunk, file_path) in zip(fences, pairs):
             await viewer.document.mount(DiffHunk(hunk, file_path=file_path), after=fence)
             await fence.remove()
+
+    async def _inject_section_insights(self) -> None:
+        """Add a clickable 💡 to the right of each `##` heading.
+
+        Clicking it asks `claude` to explain that section (with an SVG diagram)
+        in the background; while running the 💡 spins, and on success it becomes
+        a 📦 whose click opens the explanation. The whole feature is skipped when
+        `claude` is absent (degrade to nothing) or for a whole-document diff
+        (file headings aren't prose sections). The heading widget is left
+        structurally untouched — only its rendered Content gains the marker — so
+        navigation/TOC/selection keep working; a per-heading `get_selection`
+        override keeps the marker out of copied/searched/AI'd text.
+        """
+        self._insight_claude = find_claude()
+        if self._insight_claude is None or self._diff_files is not None:
+            return
+        for heading in self._headings_at_level(2):
+            hid = heading.id
+            if hid is None:
+                continue
+            heading._insight_base = heading._content
+            heading.get_selection = types.MethodType(_insight_get_selection, heading)
+            self._insight_headings[hid] = heading
+            self._insight_state[hid] = _InsightState()
+            self._apply_glyph(hid)
+        # Sizes aren't known until after layout; reflow once to right-align.
+        self.call_after_refresh(self._reflow_insight_glyphs)
+
+    def _reset_insights(self) -> None:
+        """Forget the previous document's insight markers (on navigation)."""
+        self._insight_headings = {}
+        self._insight_state = {}
+        self._insight_spinner_frame = 0
+        if self._insight_timer is not None:
+            self._insight_timer.stop()
+            self._insight_timer = None
+
+    def action_section_insight(self, heading_id: str) -> None:
+        """Handle a click on a heading's marker (routed via the Content `@click`).
+
+        Done → open the saved explanation. Running → ignore. Otherwise start a
+        generation, unless three are already in flight (then notify and refuse).
+        """
+        heading = self._insight_headings.get(heading_id)
+        if heading is None:
+            return
+        state = self._insight_state[heading_id]
+        if state.status == "running":
+            return
+        if state.status == "done":
+            self.push_screen(
+                SectionInsightScreen(
+                    state.prose, state.svgs, tmpdir=Path(self._tempdir.name)
+                )
+            )
+            return
+        if self._insight_running >= _INSIGHT_MAX_CONCURRENT:
+            self.notify(
+                f"解説を生成中です（最大{_INSIGHT_MAX_CONCURRENT}件）", severity="warning"
+            )
+            return
+        # Count synchronously here (not in the worker) so the cap is exact even
+        # when clicks arrive faster than workers start.
+        state.status = "running"
+        self._insight_running += 1
+        self._ensure_spinner()
+        self._apply_glyph(heading_id)
+        self._run_section_insight(heading)
+
+    @work
+    async def _run_section_insight(self, heading: MarkdownHeader) -> None:
+        hid = heading.id
+        try:
+            viewer = self.query_one(MarkdownViewer)
+            section = section_source(heading, viewer.document)
+            document = viewer.document.source
+            # A per-heading dir so concurrent runs never mix up their diagrams.
+            svg_out_dir = Path(self._tempdir.name) / "section-svg" / str(hid)
+            self._reset_svg_dir(svg_out_dir)
+            try:
+                result = await ask_claude(
+                    section,
+                    _INSIGHT_QUESTION,
+                    document,
+                    claude=self._insight_claude,
+                    cwd=self._md_dir,
+                    svg_out_dir=svg_out_dir,
+                    concise_svg=True,
+                    timeout=_INSIGHT_TIMEOUT_S,
+                )
+            except AiQueryError as e:
+                if hid in self._insight_headings:
+                    self._insight_state[hid].status = "error"
+                    self.notify(f"解説の生成に失敗しました: {e}", severity="error")
+            else:
+                # SVGs come from two places: files Claude saved (the common case)
+                # and any inlined into stdout. Prose is what's left.
+                inline_svgs, prose = extract_svgs(result)
+                saved = (
+                    [
+                        p.read_text(encoding="utf-8", errors="replace")
+                        for p in sorted(svg_out_dir.glob("*.svg"))
+                    ]
+                    if svg_out_dir.exists()
+                    else []
+                )
+                # Guard against navigation: if the heading is gone, drop the result.
+                if hid in self._insight_headings:
+                    st = self._insight_state[hid]
+                    st.status = "done"
+                    st.prose = prose or result
+                    st.svgs = saved + inline_svgs
+        finally:
+            self._insight_running = max(0, self._insight_running - 1)
+            if hid in self._insight_headings:
+                self._apply_glyph(hid)
+
+    @staticmethod
+    def _reset_svg_dir(d: Path) -> None:
+        """Start each run with an empty dir so a re-run doesn't re-collect stale SVGs."""
+        if d.exists():
+            for stale in d.glob("*.svg"):
+                stale.unlink()
+        d.mkdir(parents=True, exist_ok=True)
+
+    def _ensure_spinner(self) -> None:
+        if self._insight_timer is None:
+            self._insight_timer = self.set_interval(0.12, self._tick_spinner)
+
+    def _tick_spinner(self) -> None:
+        self._insight_spinner_frame += 1
+        running = [h for h, st in self._insight_state.items() if st.status == "running"]
+        if not running:
+            if self._insight_timer is not None:
+                self._insight_timer.stop()
+                self._insight_timer = None
+            return
+        for hid in running:
+            self._apply_glyph(hid)
+
+    def _reflow_insight_glyphs(self) -> None:
+        for hid in self._insight_headings:
+            self._apply_glyph(hid)
+
+    def _apply_glyph(self, hid: str) -> None:
+        heading = self._insight_headings.get(hid)
+        if heading is None:
+            return
+        state = self._insight_state[hid]
+        if state.status == "running":
+            glyph = _INSIGHT_SPINNER[self._insight_spinner_frame % len(_INSIGHT_SPINNER)]
+        else:
+            glyph = _INSIGHT_GLYPHS[state.status]
+        base = getattr(heading, "_insight_base", None)
+        if base is None:
+            return
+        # Right-align the marker: pad from the title to the heading's right edge.
+        # content_size is 0 before layout, so the first pass sits the marker just
+        # after the title; _reflow_insight_glyphs / on_resize fix it up.
+        pad = heading.content_size.width - cell_len(base.plain) - cell_len(glyph) - 1
+        gap = " " * max(1, pad)
+        suffix = Content.from_markup(f"{gap}[@click=app.section_insight('{hid}')]{glyph}[/]")
+        heading.set_content(base + suffix)
 
     def _render_mermaid_fence(self, code: str, mmdc: str) -> Image | None:
         digest = hashlib.sha1(code.encode("utf-8")).hexdigest()[:12]
@@ -385,9 +595,11 @@ class MdViewerApp(App):
         # The previous document's widgets are gone; drop any active search so
         # n/N don't step detached hits and the bar doesn't show a stale query.
         self._end_search()
+        self._reset_insights()
         await self._inject_images()
         await self._inject_mermaid()
         await self._inject_diff_hunks()
+        await self._inject_section_insights()
         if anchor:
             self.call_after_refresh(viewer.document.goto_anchor, anchor)
         else:
@@ -774,6 +986,11 @@ class MdViewerApp(App):
         self.query_one("#cmdline-count", Static).update("")
         self.query_one("#cmdline-bar").display = False
 
+    def on_resize(self, event: events.Resize) -> None:
+        # Re-right-align the section-insight markers when the width changes.
+        if self._insight_headings:
+            self.call_after_refresh(self._reflow_insight_glyphs)
+
     def on_mouse_down(self, event: events.MouseDown) -> None:
         # 押下位置を覚えておき、on_click でクリック/ドラッグを判別する。
         # 本体のドラッグ選択は Screen 側で処理されるので、ここでは記録のみ。
@@ -884,7 +1101,11 @@ def _search_text(widget: Widget) -> str:
     if isinstance(widget, MarkdownFence):
         return widget._highlighted_code.plain
     if isinstance(widget, MarkdownBlock):
-        return widget._content.plain
+        # A section-insight heading carries its clean pre-marker content in
+        # `_insight_base`; search that so the 💡/📦 marker isn't matched and the
+        # offsets still line up with the rendered (marker-suffixed) Content.
+        base = getattr(widget, "_insight_base", None)
+        return (base if base is not None else widget._content).plain
     return ""
 
 

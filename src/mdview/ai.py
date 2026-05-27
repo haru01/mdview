@@ -27,6 +27,7 @@ def build_prompt(
     document: str,
     *,
     svg_out_dir: Path | None = None,
+    concise_svg: bool = False,
 ) -> str:
     prompt = (
         "以下は現在開いているMarkdownドキュメントの全文と、その中からユーザーが選択した抜粋です。"
@@ -41,6 +42,13 @@ def build_prompt(
             f"次の絶対パスのディレクトリ配下にのみ `.svg` 拡張子で保存してください（リポジトリ内には書き込まないこと）: {svg_out_dir}\n"
             "保存先パスはユーザーに伝える必要はなく、本文の説明は簡潔にしてください。\n\n"
         )
+        if concise_svg:
+            # Steer toward a fast, light diagram (e.g. the section-insight feature
+            # values speed over a polished illustration).
+            prompt += (
+                "図は要点が伝わる最小限の要素数でシンプルに描き、凝った装飾やグラデーションは避けて"
+                "手早く作成してください。\n\n"
+            )
     return prompt + (
         f"# ドキュメント全文\n{document}\n\n"
         f"# 選択された抜粋\n{selection}\n\n"
@@ -56,6 +64,7 @@ async def ask_claude(
     claude: str,
     cwd: Path,
     svg_out_dir: Path | None = None,
+    concise_svg: bool = False,
     timeout: float = 120.0,
 ) -> str:
     """Run the CLI in print mode with the built prompt and return its stdout.
@@ -63,10 +72,13 @@ async def ask_claude(
     Args are passed as a list (no shell), so the selection/question cannot be
     interpreted as shell syntax. When ``svg_out_dir`` is given, the prompt asks
     Claude to save any SVG diagram into that directory so the popup can render
-    it. Raises AiQueryError on missing binary, timeout, non-zero exit, or empty
+    it; ``concise_svg`` additionally steers toward a fast, minimal diagram.
+    Raises AiQueryError on missing binary, timeout, non-zero exit, or empty
     output.
     """
-    prompt = build_prompt(selection, question, document, svg_out_dir=svg_out_dir)
+    prompt = build_prompt(
+        selection, question, document, svg_out_dir=svg_out_dir, concise_svg=concise_svg
+    )
     try:
         proc = await asyncio.create_subprocess_exec(
             claude,

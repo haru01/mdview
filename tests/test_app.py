@@ -2130,3 +2130,195 @@ def test_stationary_click_still_selects_block() -> None:
             assert app.screen.get_selected_text(), "the clicked block's text should be selected"
 
     asyncio.run(driver())
+
+
+# ===== Section insight (`##` heading lightbulb → treasure) =====
+
+_INSIGHT_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="30">'
+    '<rect width="80" height="30" fill="#4ebf71"/></svg>'
+)
+
+
+def test_section_insight_lightbulb_added_to_each_h2(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With `claude` available, every `##` heading gains a trailing 💡, and the
+    marker does not leak into the heading's selectable text."""
+    import asyncio
+
+    from textual.selection import SELECT_ALL
+    from textual.widgets._markdown import MarkdownH2
+
+    monkeypatch.setattr("mdview.app.find_claude", lambda: "claude")
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            h2s = list(app.query(MarkdownH2))
+            assert h2s, "sample should contain H2 headings"
+            for h in h2s:
+                assert h._content.plain.rstrip().endswith("💡"), h._content.plain
+            # The marker is stripped from selected/copied text.
+            app.screen.selections = {h2s[0]: SELECT_ALL}
+            assert "💡" not in (app.screen.get_selected_text() or "")
+
+    asyncio.run(driver())
+
+
+def test_section_insight_not_added_without_claude(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No `claude` on PATH → the feature degrades to nothing (no marker)."""
+    import asyncio
+
+    from textual.widgets._markdown import MarkdownH2
+
+    monkeypatch.setattr("mdview.app.find_claude", lambda: None)
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            for h in app.query(MarkdownH2):
+                assert "💡" not in h._content.plain
+
+    asyncio.run(driver())
+
+
+def test_section_insight_run_turns_lightbulb_into_treasure_and_opens_modal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Clicking the 💡 runs claude on that section, turns it into 📦, and a
+    second click opens the explanation modal."""
+    import asyncio
+
+    from mdview.section_insight import SectionInsightScreen
+
+    monkeypatch.setattr("mdview.app.find_claude", lambda: "claude")
+
+    async def fake_ask(
+        selection, question, document, *, claude, cwd,
+        svg_out_dir=None, concise_svg=False, timeout=120.0,
+    ):
+        assert selection.startswith("## "), "the section's own Markdown is sent"
+        assert document, "the whole document is sent as context"
+        if svg_out_dir is not None:
+            svg_out_dir.mkdir(parents=True, exist_ok=True)
+            (svg_out_dir / "diagram.svg").write_text(_INSIGHT_SVG, encoding="utf-8")
+        return "このセクションの解説です。"
+
+    monkeypatch.setattr("mdview.app.ask_claude", fake_ask)
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            hid = next(iter(app._insight_headings))
+            heading = app._insight_headings[hid]
+
+            app.action_section_insight(hid)
+            for _ in range(60):
+                await pilot.pause()
+                if app._insight_state[hid].status == "done":
+                    break
+            assert app._insight_state[hid].status == "done"
+            assert heading._content.plain.rstrip().endswith("📦"), heading._content.plain
+            assert app._insight_state[hid].prose == "このセクションの解説です。"
+            assert app._insight_state[hid].svgs, "the saved SVG should be collected"
+
+            app.action_section_insight(hid)
+            await pilot.pause()
+            await pilot.pause()
+            assert isinstance(app.screen, SectionInsightScreen)
+
+    asyncio.run(driver())
+
+
+def test_section_insight_caps_concurrency_at_three(monkeypatch: pytest.MonkeyPatch) -> None:
+    """At most three sections generate at once; a fourth request is refused with
+    a notice and starts no worker."""
+    import asyncio
+
+    monkeypatch.setattr("mdview.app.find_claude", lambda: "claude")
+    release = asyncio.Event()
+
+    async def blocking_ask(
+        selection, question, document, *, claude, cwd,
+        svg_out_dir=None, concise_svg=False, timeout=120.0,
+    ):
+        await release.wait()
+        return "done"
+
+    monkeypatch.setattr("mdview.app.ask_claude", blocking_ask)
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            hids = list(app._insight_headings)[:4]
+            assert len(hids) == 4, "sample needs at least four H2 sections"
+
+            notes: list[tuple] = []
+            app.notify = lambda *a, **k: notes.append((a, k))  # type: ignore[method-assign]
+
+            for hid in hids[:3]:
+                app.action_section_insight(hid)
+            assert app._insight_running == 3
+
+            app.action_section_insight(hids[3])
+            assert app._insight_running == 3, "the 4th request must not start a worker"
+            assert app._insight_state[hids[3]].status == "idle"
+            assert any("最大3件" in str(a[0]) for a, _ in notes if a), notes
+
+            release.set()
+            for _ in range(80):
+                await pilot.pause()
+                if app._insight_running == 0:
+                    break
+            assert app._insight_running == 0
+
+    asyncio.run(driver())
+
+
+def test_section_insight_uses_extended_timeout_and_concise_svg(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Section insight runs with a longer timeout and asks for a simple diagram
+    (the Ask AI defaults of 120s / full-detail SVG stay untouched)."""
+    import asyncio
+
+    captured: dict = {}
+
+    async def fake_ask(
+        selection, question, document, *, claude, cwd,
+        svg_out_dir=None, concise_svg=False, timeout=120.0,
+    ):
+        captured["timeout"] = timeout
+        captured["concise_svg"] = concise_svg
+        return "ok"
+
+    monkeypatch.setattr("mdview.app.find_claude", lambda: "claude")
+    monkeypatch.setattr("mdview.app.ask_claude", fake_ask)
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            hid = next(iter(app._insight_headings))
+            app.action_section_insight(hid)
+            for _ in range(60):
+                await pilot.pause()
+                if app._insight_state[hid].status == "done":
+                    break
+            assert captured["timeout"] == 240.0
+            assert captured["concise_svg"] is True
+
+    asyncio.run(driver())
