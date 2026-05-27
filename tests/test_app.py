@@ -1376,12 +1376,12 @@ _MULTI_FILE_DIFF = "".join(
 
 
 async def _submit_search(pilot, query: str) -> None:
-    """Open the `/` bar, type *query*, and submit it."""
+    """Open the command line in search mode, type `/query`, and submit it."""
     from textual.widgets import Input
 
     await pilot.press("slash")
     await pilot.pause()
-    pilot.app.query_one("#search-input", Input).value = query
+    pilot.app.query_one("#cmdline", Input).value = "/" + query
     await pilot.press("enter")
     await pilot.pause()
 
@@ -1402,7 +1402,7 @@ def test_search_aborts_on_catastrophic_pattern() -> None:
             await _submit_search(pilot, "(a|a)*$")
             assert time.monotonic() - started < 5, "search must not hang"
             assert app._search_hits == [], "pathological search yields no hits"
-            assert "複雑" in str(app.query_one("#search-count").render())
+            assert "複雑" in str(app.query_one("#cmdline-count").render())
 
     asyncio.run(driver())
 
@@ -1427,16 +1427,16 @@ def test_navigation_clears_active_search(tmp_path) -> None:
             await pilot.pause()
             assert app._search_hits == [], "stale hits must be cleared on nav"
             assert app._search_matches == []
-            assert app.query_one("#search-bar").display is False, "bar hidden after nav"
+            assert app.query_one("#cmdline-bar").display is False, "bar hidden after nav"
 
     asyncio.run(driver())
 
 
 def test_search_bar_shows_less_style_slash_prompt() -> None:
-    """The bar reads like less: a leading `/` prompt before the pattern."""
+    """The bar reads like less: `/` is the editable leading char of the field."""
     import asyncio
 
-    from textual.widgets import Static
+    from textual.widgets import Input
 
     async def driver() -> None:
         app = MdViewerApp(content="# T\n\nalpha beta\n")
@@ -1445,8 +1445,54 @@ def test_search_bar_shows_less_style_slash_prompt() -> None:
             await pilot.pause()
             await pilot.press("slash")
             await pilot.pause()
-            prompt = app.query_one("#search-prompt", Static)
-            assert str(prompt.render()) == "/"
+            box = app.query_one("#cmdline", Input)
+            assert box.value == "/", "the field opens with a `/` prefix"
+            assert box.cursor_position == 1, "caret sits after the `/`"
+
+    asyncio.run(driver())
+
+
+def test_cmdline_backspace_deletes_prefix_and_switches_mode() -> None:
+    """The leading `/` is editable: Backspace removes it, then `:` switches mode."""
+    import asyncio
+
+    from textual.widgets import Input
+
+    async def driver() -> None:
+        app = MdViewerApp(content="# T\n\nalpha\n")
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("slash")
+            await pilot.pause()
+            box = app.query_one("#cmdline", Input)
+            assert box.value == "/"
+            await pilot.press("backspace")
+            await pilot.pause()
+            assert box.value == "", "Backspace deletes the `/` prefix"
+            await pilot.press("colon")
+            await pilot.pause()
+            assert box.value == ":", "can then type `:` to switch to command mode"
+
+    asyncio.run(driver())
+
+
+def test_search_reopens_prefilled_with_slash_and_last_query() -> None:
+    """Re-opening with `/` prefills the field as `/<last query>`."""
+    import asyncio
+
+    from textual.widgets import Input
+
+    async def driver() -> None:
+        app = MdViewerApp(content="# T\n\nalpha alpha\n")
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            await _submit_search(pilot, "alpha")
+            assert app._search_hits, "search is active"
+            await pilot.press("slash")
+            await pilot.pause()
+            assert app.query_one("#cmdline", Input).value == "/alpha"
 
     asyncio.run(driver())
 
@@ -1472,7 +1518,7 @@ def test_search_double_at_matches_only_hunks() -> None:
             assert len(app._search_matches) == 3
             assert viewer.scroll_y > start, "should jump to the first hunk match"
             # the bar stays visible as a status line while a search is active
-            assert app.query_one("#search-bar").display is True
+            assert app.query_one("#cmdline-bar").display is True
             # exactly one block is marked the "current" one
             current = list(viewer.document.query(".search-current"))
             assert len(current) == 1
@@ -1587,7 +1633,7 @@ def test_empty_search_clears_matches() -> None:
             assert app._search_hits == []
             assert app._search_matches == []
             # clearing the search hides the status bar again
-            assert app.query_one("#search-bar").display is False
+            assert app.query_one("#cmdline-bar").display is False
 
     asyncio.run(driver())
 
@@ -1640,12 +1686,12 @@ def test_search_colours_only_the_matched_substring() -> None:
 
 
 async def _submit_command(pilot, text: str) -> None:
-    """Open the `:` bar, type *text*, and submit it."""
+    """Open the command line in command mode, type `:text`, and submit it."""
     from textual.widgets import Input
 
     await pilot.press("colon")
     await pilot.pause()
-    pilot.app.query_one("#command-input", Input).value = text
+    pilot.app.query_one("#cmdline", Input).value = ":" + text
     await pilot.press("enter")
     await pilot.pause()
 
@@ -1665,7 +1711,7 @@ def test_colon_q_quits() -> None:
             app.exit = lambda *a, **k: exits.append(True)  # type: ignore[method-assign]
             await _submit_command(pilot, "q")
             assert exits == [True], "`:q` should call exit()"
-            assert app.query_one("#command-bar").display is False
+            assert app.query_one("#cmdline-bar").display is False
             await pilot.press("q")
             await pilot.pause()
             assert exits == [True, True], "single `q` should also exit"
@@ -1771,7 +1817,7 @@ def test_unknown_command_notifies_and_does_not_quit() -> None:
             app.exit = lambda *a, **k: exits.append(True)  # type: ignore[method-assign]
             await _submit_command(pilot, "nope")
             assert exits == [], "unknown command must not quit"
-            assert app.query_one("#command-bar").display is False
+            assert app.query_one("#cmdline-bar").display is False
 
     asyncio.run(driver())
 
@@ -1812,7 +1858,7 @@ def test_escape_clears_active_search_without_quitting() -> None:
             await pilot.press("escape")
             await pilot.pause()
             assert app._search_hits == [], "Esc should clear the search"
-            assert app.query_one("#search-bar").display is False
+            assert app.query_one("#cmdline-bar").display is False
             assert exits == [], "Esc must not quit while clearing a search"
 
     asyncio.run(driver())
@@ -1833,10 +1879,10 @@ def test_command_line_escape_cancels_without_running() -> None:
             app.exit = lambda *a, **k: exits.append(True)  # type: ignore[method-assign]
             await pilot.press("colon")
             await pilot.pause()
-            assert app.query_one("#command-bar").display is True
+            assert app.query_one("#cmdline-bar").display is True
             await pilot.press("escape")
             await pilot.pause()
-            assert app.query_one("#command-bar").display is False
+            assert app.query_one("#cmdline-bar").display is False
             assert exits == [], "cancelling the command line must not quit"
 
     asyncio.run(driver())

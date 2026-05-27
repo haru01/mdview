@@ -73,31 +73,20 @@ class _MdViewer(MarkdownViewer):
         message.prevent_default()
 
 
-class _SearchInput(Input):
-    """The `/` search box. Esc stops editing without leaving the search.
+class _CommandLine(Input):
+    """The unified `/`-search / `:`-command line (less/vim-style).
 
-    The App binds Esc to `cancel` (clear an active search), not quit, and a
-    plain Input doesn't handle Esc, so binding it here — on the focused widget —
-    intercepts it first and just stops editing (keeps the status line up).
+    The leading `/` or `:` is *part of the editable value*, not a fixed prompt,
+    so Backspace deletes it and you can retype the other prefix to switch modes
+    mid-edit. The mode is decided from the first character on submit (see
+    `app._run_cmdline`). Esc stops editing here — bound on the focused widget so
+    it doesn't bubble to the App's `cancel` (which clears the search/selection).
     """
 
-    BINDINGS = [Binding("escape", "cancel_search", "Cancel", show=False)]
+    BINDINGS = [Binding("escape", "cancel_edit", "Cancel", show=False)]
 
-    def action_cancel_search(self) -> None:
-        self.app._cancel_search_edit()  # type: ignore[attr-defined]
-
-
-class _CommandInput(Input):
-    """The `:` command box. Esc closes it without running anything.
-
-    Mirrors `_SearchInput`: bound on the focused widget so Esc cancels the
-    command line first rather than bubbling up to the App's `cancel` binding.
-    """
-
-    BINDINGS = [Binding("escape", "cancel_command", "Cancel", show=False)]
-
-    def action_cancel_command(self) -> None:
-        self.app._cancel_command()  # type: ignore[attr-defined]
+    def action_cancel_edit(self) -> None:
+        self.app._cancel_cmdline_edit()  # type: ignore[attr-defined]
 
 
 class MdViewerApp(App):
@@ -213,18 +202,14 @@ class MdViewerApp(App):
         # open_links=False so we route anchors (#section) to goto_anchor
         # ourselves instead of letting Textual hand them to the OS browser.
         yield _MdViewer(show_table_of_contents=False, open_links=False)
-        # The `/` search bar lives docked at the bottom, hidden until invoked
-        # (theme.css sets `display: none`; action_search flips it on). A leading
-        # `/` prompt makes it read like less: the typed pattern follows the slash.
-        with Horizontal(id="search-bar"):
-            yield Static("/", id="search-prompt")
-            yield _SearchInput(placeholder="正規表現", id="search-input")
-            yield Static("", id="search-count")
-        # The `:` command line, same docked/hidden pattern as the search bar
-        # (action_command flips it on). `:q` quits, `:h` opens help.
-        with Horizontal(id="command-bar"):
-            yield Static(":", id="command-prompt")
-            yield _CommandInput(placeholder="q=終了  h=ヘルプ", id="command-input")
+        # The unified command line, docked at the bottom and hidden until `/` or
+        # `:` (theme.css sets `display: none`; action_search/action_command flip
+        # it on). less/vim-style: one editable field whose leading `/` or `:`
+        # selects search vs command mode (see _run_cmdline); the match
+        # count/status sits at the right.
+        with Horizontal(id="cmdline-bar"):
+            yield _CommandLine(placeholder="/ 検索   : コマンド", id="cmdline")
+            yield Static("", id="cmdline-count")
 
     async def on_mount(self) -> None:
         viewer = self.query_one(MarkdownViewer)
@@ -547,30 +532,31 @@ class MdViewerApp(App):
         viewer.scroll_to(y=target_y, animate=False)
 
     def action_search(self) -> None:
-        """Open the `/` search bar, prefilled with the last query."""
-        self.query_one("#search-bar").display = True
-        box = self.query_one("#search-input", Input)
-        box.value = self._search_query
-        box.focus()
+        """Open the command line in search mode (`/`), prefilled with the last query."""
+        self._open_cmdline("/" + self._search_query)
 
     def action_command(self) -> None:
-        """Open the `:` command line (empty, focused)."""
-        self.query_one("#command-bar").display = True
-        box = self.query_one("#command-input", Input)
-        box.value = ""
+        """Open the command line in command mode (`:`)."""
+        self._open_cmdline(":")
+
+    def _open_cmdline(self, initial: str) -> None:
+        self.query_one("#cmdline-bar").display = True
+        box = self.query_one("#cmdline", Input)
+        box.value = initial
         box.focus()
+        box.cursor_position = len(initial)  # caret after the prefix, ready to type
 
     def action_cancel(self) -> None:
         """Esc with nothing focused: cancel transient state; never quit.
 
-        Esc while editing the search/command box is handled by those Inputs'
-        own bindings (and a modal's Esc dismisses it). Here Esc only reaches the
-        App on the base screen, where it clears any active search *and* drops the
+        Esc while editing the command line is handled by `_CommandLine`'s own
+        binding (and a modal's Esc dismisses it). Here Esc only reaches the App
+        on the base screen, where it clears any active search *and* drops the
         current selection — resetting the semantic-selection ladder so the next
         `v`/click starts small again. With nothing active it's a deliberate
         no-op; it must never exit the app.
         """
-        if self._search_hits or self.query_one("#search-bar").display:
+        if self._search_hits or self.query_one("#cmdline-bar").display:
             self._end_search()
         # Clear any selection (semantic or a raw drag) and reset the ladder, so
         # the next expand/click begins from the smallest block.
@@ -578,22 +564,30 @@ class MdViewerApp(App):
         self._reset_selection_state()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id == "search-input":
-            self._search_query = event.value
-            self._run_search()
-            # Drop focus off the input so n/N reach the App's bindings (the
-            # viewer is can_focus=False, so we blur rather than focus it). The
-            # bar stays visible as a status line (query + position) while a
-            # search is active; an empty query clears it (see _run_search).
-            self.set_focus(None)
-        elif event.input.id == "command-input":
-            self._run_command(event.value)
+        if event.input.id == "cmdline":
+            self._run_cmdline(event.value)
         # else: ignore an Ask AI Input.Submitted bubbling up.
 
+    def _run_cmdline(self, raw: str) -> None:
+        """Dispatch the command line by its leading character: `:` → command,
+        anything else → search (a leading `/` is the prompt and is stripped)."""
+        if raw.startswith(":"):
+            self._run_command(raw[1:])
+            return
+        query = raw[1:] if raw.startswith("/") else raw
+        self._search_query = query
+        self._run_search()
+        # Normalise the status display to `/query` and drop focus so n/N reach
+        # the App's bindings (the viewer is can_focus=False, so we blur rather
+        # than focus it). The bar stays as a status line while a search is
+        # active; an empty query clears it (see _run_search).
+        self.query_one("#cmdline", Input).value = "/" + query
+        self.set_focus(None)
+
     def _run_command(self, raw: str) -> None:
-        """Dispatch a `:` command, then close the command line."""
+        """Dispatch a `:` command (text after the colon), then close the line."""
         command = parse_command(raw)
-        self.query_one("#command-bar").display = False
+        self.query_one("#cmdline-bar").display = False
         self.set_focus(None)
         if command == "quit":
             self.exit()  # exit() is sync; App.action_quit is a coroutine
@@ -602,16 +596,13 @@ class MdViewerApp(App):
         elif raw.strip():
             self.notify(f"未知のコマンド: :{raw.strip()}", severity="warning")
 
-    def _cancel_command(self) -> None:
-        """Esc in the command box: close it without running anything."""
-        self.query_one("#command-bar").display = False
-        self.set_focus(None)
-
-    def _cancel_search_edit(self) -> None:
-        """Esc in the box: stop editing without quitting. Keep an active search's
-        status line up; otherwise hide the (now-irrelevant) empty bar."""
-        if not self._search_hits:
-            self.query_one("#search-bar").display = False
+    def _cancel_cmdline_edit(self) -> None:
+        """Esc while editing: stop editing without quitting. If a search is
+        active, restore its `/query` status line; otherwise hide the bar."""
+        if self._search_hits:
+            self.query_one("#cmdline", Input).value = "/" + self._search_query
+        else:
+            self.query_one("#cmdline-bar").display = False
         self.set_focus(None)
 
     def _run_search(self) -> None:
@@ -625,14 +616,14 @@ class MdViewerApp(App):
         query clears the search (`n`/`N` then become no-ops until the next `/`).
         """
         viewer = self.query_one(MarkdownViewer)
-        count = self.query_one("#search-count", Static)
+        count = self.query_one("#cmdline-count", Static)
         self._clear_search_highlights()
         pattern = compile_query(self._search_query)
         self._search_pattern = pattern
         if pattern is None:
             self._reset_search_state()
             count.update("")
-            self.query_one("#search-bar").display = False
+            self.query_one("#cmdline-bar").display = False
             return
         hits: list[tuple[Widget, int, int, int]] = []
         widgets: list[Widget] = []
@@ -709,7 +700,7 @@ class MdViewerApp(App):
         # the view. Keep a couple of rows of lead-in for context.
         target_y = max(0, widget.virtual_region.y + line - 2)
         viewer.scroll_to(y=target_y, animate=False)
-        self.query_one("#search-count", Static).update(
+        self.query_one("#cmdline-count", Static).update(
             f"{self._search_index + 1}/{len(hits)} 件"
         )
 
@@ -775,8 +766,8 @@ class MdViewerApp(App):
         self._reset_search_state()
         self._search_originals.clear()
         self._search_pattern = None
-        self.query_one("#search-count", Static).update("")
-        self.query_one("#search-bar").display = False
+        self.query_one("#cmdline-count", Static).update("")
+        self.query_one("#cmdline-bar").display = False
 
     def on_click(self, event: events.Click) -> None:
         """Mouse-driven semantic selection.

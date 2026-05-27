@@ -280,36 +280,28 @@ AskAiScreen {
     margin: 1 0 0 0;
 }
 
-/* ===== `/` search bar =====
- * Docked at the bottom, hidden until `/` (app.action_search flips `display`).
- * Reads like less: a leading `/` prompt, then the typed pattern, then the
- * match count at the right.
+/* ===== Unified command line (`/` search, `:` command) =====
+ * Docked at the bottom, hidden until `/` or `:` (action_search/action_command
+ * flip `display`). less/vim-style: the leading `/` or `:` is editable text in
+ * the field itself, with the match count/status flush right.
  */
 
-#search-bar {
+#cmdline-bar {
     dock: bottom;
     height: 1;
     display: none;
     background: $panel;
 }
 
-/* The `/` prompt: hug the left edge with the input's pattern flush after it. */
-#search-prompt {
-    width: auto;
-    height: 1;
-    padding: 0 0 0 1;
-    color: $text-muted;
-}
-
-#search-input {
+#cmdline {
     width: 1fr;
     height: 1;
     border: none;
     background: $panel;
-    padding: 0 1 0 0;
+    padding: 0 1;
 }
 
-#search-count {
+#cmdline-count {
     width: auto;
     height: 1;
     padding: 0 1;
@@ -320,33 +312,6 @@ AskAiScreen {
  * substrings inside each block (subtle green for the set, brighter for the
  * current match), so there is no whole-block CSS rule. `.search-current` stays
  * as a no-style marker class for the block n/N last landed on. */
-
-/* ===== `:` command line =====
- * Same docked/hidden pattern as the search bar (action_command flips `display`).
- * A leading `:` prompt, then the typed command (e.g. `q`, `h`).
- */
-
-#command-bar {
-    dock: bottom;
-    height: 1;
-    display: none;
-    background: $panel;
-}
-
-#command-prompt {
-    width: auto;
-    height: 1;
-    padding: 0 0 0 1;
-    color: $text-muted;
-}
-
-#command-input {
-    width: 1fr;
-    height: 1;
-    border: none;
-    background: $panel;
-    padding: 0 1 0 0;
-}
 
 /* ===== Image zoom overlay =====
  * Click a rendered SVG/diagram to blow it up to (almost) the full screen over a
