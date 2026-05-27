@@ -7,16 +7,19 @@ from pathlib import Path
 
 from textual import work
 from textual.app import ComposeResult
-from textual.containers import Vertical, VerticalScroll
-from textual.screen import ModalScreen
+from textual.containers import ScrollableContainer, Vertical, VerticalScroll
 from textual.widgets import Checkbox, Input, LoadingIndicator, Markdown, Static
 
 from mdview.ai import AiQueryError, ask_claude
 from mdview.image_zoom import ZoomableImage
+from mdview.scroll_modal import ScrollableModalScreen
 from mdview.svg import SvgRenderError, extract_svgs, rasterize_svg
 
 
-class AskAiScreen(ModalScreen):
+class AskAiScreen(ScrollableModalScreen):
+    # Movement keys scroll the (often long) answer; while the question Input is
+    # focused they type instead, so scroll the answer with arrows/PageUp/PageDown
+    # there (see ScrollableModalScreen).
     BINDINGS = [("escape", "dismiss", "Close")]
 
     def __init__(
@@ -56,6 +59,9 @@ class AskAiScreen(ModalScreen):
 
     def on_mount(self) -> None:
         self.query_one("#ask-ai-input", Input).focus()
+
+    def scroll_region(self) -> ScrollableContainer:
+        return self.query_one("#ask-ai-answer", VerticalScroll)
 
     def action_dismiss(self) -> None:
         self.dismiss()

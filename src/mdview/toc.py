@@ -18,12 +18,18 @@ from textual.widgets._markdown import Markdown, MarkdownBlock, MarkdownTableOfCo
 class TocScreen(ModalScreen):
     """A modal that shows the document's table of contents in a wide popup."""
 
+    # j/k move the cursor; the page/top/bottom keys drive the Tree too so they
+    # scroll the TOC itself rather than leaking to the document behind the modal.
     BINDINGS = [
         ("escape", "dismiss", "Close"),
         ("q", "dismiss", "Close"),
         ("t", "dismiss", "Close"),
         ("j", "cursor_down", "Down"),
         ("k", "cursor_up", "Up"),
+        ("d,ctrl+d,f,pagedown", "page_down", "Page down"),
+        ("u,ctrl+u,b,pageup", "page_up", "Page up"),
+        ("g,less_than_sign", "to_top", "Top"),
+        ("G,greater_than_sign", "to_bottom", "Bottom"),
     ]
 
     def __init__(self, viewer: MarkdownViewer, toc_data: object) -> None:
@@ -63,3 +69,15 @@ class TocScreen(ModalScreen):
 
     def action_cursor_up(self) -> None:
         self.query_one(Tree).action_cursor_up()
+
+    def action_page_down(self) -> None:
+        self.query_one(Tree).action_page_down()
+
+    def action_page_up(self) -> None:
+        self.query_one(Tree).action_page_up()
+
+    def action_to_top(self) -> None:
+        self.query_one(Tree).action_scroll_home()
+
+    def action_to_bottom(self) -> None:
+        self.query_one(Tree).action_scroll_end()

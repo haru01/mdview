@@ -29,9 +29,11 @@ from textual_image.widget import Image
 
 from mdview.ai import find_claude
 from mdview.ask_ai import AskAiScreen
+from mdview.command import parse_command
 from mdview.diff import FileDiff, parse_hunk_lines
 from mdview.diff_widget import DiffHunk
 from mdview.diffview import render_hunk
+from mdview.help import HelpScreen
 from mdview.image_zoom import ZoomableImage
 from mdview.mermaid import MermaidRenderError, find_mmdc, render_mermaid
 from mdview.search import compile_query
@@ -45,7 +47,7 @@ _MARKDOWN_EXTS = {".md", ".markdown", ".mdown", ".mkd"}
 
 # `/` search: colour applied to the matched substrings themselves (per-word, not
 # the whole block). The set gets a muted green wash; the current match (where
-# n/p landed) a brighter, bold one. These strings parse for both Textual
+# n/N landed) a brighter, bold one. These strings parse for both Textual
 # `Content.highlight_regex` and Rich `Text.highlight_regex` (the DiffHunk path).
 _MATCH_HL = "on #335c46"
 _CURRENT_HL = "bold on #4ebf71"
@@ -72,11 +74,11 @@ class _MdViewer(MarkdownViewer):
 
 
 class _SearchInput(Input):
-    """The `/` search box. Esc closes it instead of quitting the app.
+    """The `/` search box. Esc stops editing without leaving the search.
 
-    The App binds Esc to quit, and a plain Input doesn't handle Esc, so without
-    this the key would bubble up and exit. Binding it here — on the focused
-    widget — intercepts it first and just hides the bar.
+    The App binds Esc to `cancel` (clear an active search), not quit, and a
+    plain Input doesn't handle Esc, so binding it here — on the focused widget —
+    intercepts it first and just stops editing (keeps the status line up).
     """
 
     BINDINGS = [Binding("escape", "cancel_search", "Cancel", show=False)]
@@ -85,29 +87,62 @@ class _SearchInput(Input):
         self.app._cancel_search_edit()  # type: ignore[attr-defined]
 
 
+class _CommandInput(Input):
+    """The `:` command box. Esc closes it without running anything.
+
+    Mirrors `_SearchInput`: bound on the focused widget so Esc cancels the
+    command line first rather than bubbling up to the App's `cancel` binding.
+    """
+
+    BINDINGS = [Binding("escape", "cancel_command", "Cancel", show=False)]
+
+    def action_cancel_command(self) -> None:
+        self.app._cancel_command()  # type: ignore[attr-defined]
+
+
 class MdViewerApp(App):
     CSS_PATH = "theme.css"
 
+    # less/delta-style key map. Esc is `cancel` (never quit); quitting is `q` or
+    # `:q`. Key *names* matter for the punctuation: see textual.keys
+    # (`]`=right_square_bracket, `}`=right_curly_bracket, `:`=colon, etc.).
     BINDINGS = [
+        # quit / command line / cancel
         Binding("q", "quit", "Quit", show=True),
-        Binding("escape", "quit", "Quit", show=False),
+        Binding("colon", "command", "Command", show=True),
+        Binding("escape", "cancel", "Cancel", show=False),
+        # scrolling (less)
         Binding("j,down", "scroll_down", "Down", show=False),
         Binding("k,up", "scroll_up", "Up", show=False),
-        Binding("ctrl+d", "scroll_half_down", "Half page down", show=False),
-        Binding("ctrl+u", "scroll_half_up", "Half page up", show=False),
-        Binding("g", "scroll_home", "Top", show=False),
-        Binding("G", "scroll_end", "Bottom", show=False),
+        Binding("d,ctrl+d", "scroll_half_down", "Half page down", show=False),
+        Binding("u,ctrl+u", "scroll_half_up", "Half page up", show=False),
+        Binding("f,ctrl+f,pagedown", "page_down", "Page down", show=False),
+        Binding("b,ctrl+b,pageup", "page_up", "Page up", show=False),
+        Binding("g,less_than_sign", "scroll_home", "Top", show=False),
+        Binding("G,greater_than_sign", "scroll_end", "Bottom", show=False),
+        # search (less): / to search, n/N to step matches
         Binding("slash", "search", "Search", show=True),
-        Binding("n", "next_heading", "Next", show=True),
-        Binding("p", "prev_heading", "Prev", show=True),
-        Binding("s", "next_hunk", "Next hunk", show=True),
-        Binding("S", "prev_hunk", "Prev hunk", show=False),
+        Binding("n", "next_match", "Next match", show=True),
+        Binding("N", "prev_match", "Prev match", show=False),
+        # structural navigation. Space/Shift+Space are the ergonomic, context-
+        # aware pair (headings in prose, file headings + @@ hunks in a diff);
+        # the bracket keys are explicit and always available (and `[`/`{` are the
+        # reliable "previous" where a terminal can't send Shift+Space).
+        Binding("space", "next_section", "Next section", show=False),
+        Binding("shift+space", "prev_section", "Prev section", show=False),
+        Binding("right_square_bracket", "next_heading", "Next heading", show=True),
+        Binding("left_square_bracket", "prev_heading", "Prev heading", show=False),
+        Binding("right_curly_bracket", "next_hunk", "Next hunk", show=False),
+        Binding("left_curly_bracket", "prev_hunk", "Prev hunk", show=False),
         Binding("t", "open_toc", "TOC", show=True),
-        Binding("b,left", "go_back", "Back", show=True),
+        # link history (b is page-up now, so back moves to Backspace/←)
+        Binding("backspace,left", "go_back", "Back", show=True),
+        # selection / AI
         Binding("v", "expand_selection", "Expand sel", show=True),
         Binding("V", "shrink_selection", "Shrink sel", show=False),
         Binding("h", "ask_ai", "Ask AI", show=True),
-        Binding("question_mark", "toggle_help", "Help", show=True),
+        # help
+        Binding("question_mark", "help", "Help", show=True),
     ]
 
     def __init__(
@@ -133,20 +168,20 @@ class MdViewerApp(App):
         self._sel_index: int = 0
         # `/` search state. `_search_query` is the last submitted pattern (so the
         # bar reopens prefilled); `_search_matches` is the matched blocks in
-        # document order — when non-empty, `n`/`p` walk these instead of headings.
-        # `_search_index` is the current match (highlighted distinctly so a jump
-        # is visible even when the match is already on-screen).
+        # document order. While a search is active `n`/`N` walk the matches
+        # (headings stay on `]`/`[`). `_search_index` is the current match
+        # (highlighted distinctly so a jump is visible even when on-screen).
         self._search_query: str = ""
         # `_search_hits` is one entry per matched substring (block, offset span,
-        # and the line index of the match within the block so n/p can scroll to
-        # the exact line, not just the block top); `n`/`p` step through it one
+        # and the line index of the match within the block so n/N can scroll to
+        # the exact line, not just the block top); `n`/`N` step through it one
         # occurrence at a time, with `_search_index` the current one.
         # `_search_matches` is the de-duped blocks that hold a hit (used to restore
         # whole blocks when clearing).
         self._search_hits: list[tuple[Widget, int, int, int]] = []
         self._search_matches: list[Widget] = []
         self._search_index: int = 0
-        # The compiled pattern (for re-highlighting on n/p) and the per-block
+        # The compiled pattern (for re-highlighting on n/N) and the per-block
         # originals captured before washing, so highlights can be undone cleanly.
         self._search_pattern: regex.Pattern[str] | None = None
         self._search_originals: dict[Widget, object] = {}
@@ -180,6 +215,11 @@ class MdViewerApp(App):
             yield Static("/", id="search-prompt")
             yield _SearchInput(placeholder="正規表現", id="search-input")
             yield Static("", id="search-count")
+        # The `:` command line, same docked/hidden pattern as the search bar
+        # (action_command flips it on). `:q` quits, `:h` opens help.
+        with Horizontal(id="command-bar"):
+            yield Static(":", id="command-prompt")
+            yield _CommandInput(placeholder="q=終了  h=ヘルプ", id="command-input")
 
     async def on_mount(self) -> None:
         viewer = self.query_one(MarkdownViewer)
@@ -348,7 +388,7 @@ class MdViewerApp(App):
         self._md_dir = path.parent
         self.title = path.name
         # The previous document's widgets are gone; drop any active search so
-        # n/p don't step detached hits and the bar doesn't show a stale query.
+        # n/N don't step detached hits and the bar doesn't show a stale query.
         self._end_search()
         await self._inject_images()
         await self._inject_mermaid()
@@ -384,20 +424,27 @@ class MdViewerApp(App):
         viewer = self.query_one(MarkdownViewer)
         viewer.scroll_relative(y=-(viewer.size.height // 2), animate=False)
 
+    def action_page_down(self) -> None:
+        # Less-style full page with one line of overlap for continuity.
+        viewer = self.query_one(MarkdownViewer)
+        viewer.scroll_relative(y=max(1, viewer.size.height - 1), animate=False)
+
+    def action_page_up(self) -> None:
+        viewer = self.query_one(MarkdownViewer)
+        viewer.scroll_relative(y=-max(1, viewer.size.height - 1), animate=False)
+
     def action_scroll_home(self) -> None:
         self.query_one(MarkdownViewer).scroll_home(animate=False)
 
     def action_scroll_end(self) -> None:
         self.query_one(MarkdownViewer).scroll_end(animate=False)
 
-    def action_toggle_help(self) -> None:
-        from textual.widgets import HelpPanel
-
-        existing = self.screen.query(HelpPanel)
-        if existing:
-            existing.remove()
-        else:
-            self.screen.mount(HelpPanel())
+    def action_help(self) -> None:
+        # `?` / `:h` open the shortcut cheat-sheet. If it's already up (re-press
+        # `?`), HelpScreen's own `question_mark` binding dismisses it first, so
+        # this only ever pushes when none is open.
+        if not isinstance(self.screen, HelpScreen):
+            self.push_screen(HelpScreen())
 
     def action_ask_ai(self) -> None:
         selection = self.screen.get_selected_text()
@@ -431,23 +478,39 @@ class MdViewerApp(App):
             return
         self.push_screen(TocScreen(viewer, toc_data))
 
-    def action_next_heading(self) -> None:
+    def action_next_match(self) -> None:
+        # `n` steps search matches; no-op when no search is active.
         if self._search_hits:
             self._step_match(1)
-        else:
-            self._jump_to(self._all_headings(), direction=1)
 
-    def action_prev_heading(self) -> None:
+    def action_prev_match(self) -> None:
         if self._search_hits:
             self._step_match(-1)
-        else:
-            self._jump_to(self._all_headings(), direction=-1)
+
+    def action_next_heading(self) -> None:
+        self._jump_to(self._all_headings(), direction=1)
+
+    def action_prev_heading(self) -> None:
+        self._jump_to(self._all_headings(), direction=-1)
 
     def action_next_hunk(self) -> None:
         self._jump_to(list(self.query_one(MarkdownViewer).document.query(DiffHunk)), direction=1)
 
     def action_prev_hunk(self) -> None:
         self._jump_to(list(self.query_one(MarkdownViewer).document.query(DiffHunk)), direction=-1)
+
+    def action_next_section(self) -> None:
+        self._jump_to(self._section_targets(), direction=1)
+
+    def action_prev_section(self) -> None:
+        self._jump_to(self._section_targets(), direction=-1)
+
+    def _section_targets(self) -> list[Widget]:
+        """Space/Shift+Space targets: headings, plus every `@@` hunk so a diff
+        steps file boundary → hunk → hunk in document order. In prose with no
+        diff there are no DiffHunks, so this is just the headings."""
+        viewer = self.query_one(MarkdownViewer)
+        return self._all_headings() + list(viewer.document.query(DiffHunk))
 
     def _all_headings(self) -> list[Widget]:
         return list(self.query_one(MarkdownViewer).document.query(MarkdownHeader))
@@ -474,16 +537,58 @@ class MdViewerApp(App):
         box.value = self._search_query
         box.focus()
 
+    def action_command(self) -> None:
+        """Open the `:` command line (empty, focused)."""
+        self.query_one("#command-bar").display = True
+        box = self.query_one("#command-input", Input)
+        box.value = ""
+        box.focus()
+
+    def action_cancel(self) -> None:
+        """Esc with nothing focused: cancel transient state; never quit.
+
+        Esc while editing the search/command box is handled by those Inputs'
+        own bindings (and a modal's Esc dismisses it). Here Esc only reaches the
+        App on the base screen, where it clears any active search *and* drops the
+        current selection — resetting the semantic-selection ladder so the next
+        `v`/click starts small again. With nothing active it's a deliberate
+        no-op; it must never exit the app.
+        """
+        if self._search_hits or self.query_one("#search-bar").display:
+            self._end_search()
+        # Clear any selection (semantic or a raw drag) and reset the ladder, so
+        # the next expand/click begins from the smallest block.
+        self.screen.clear_selection()
+        self._reset_selection_state()
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        # Only our search box; ignore an Ask AI Input.Submitted bubbling up.
-        if event.input.id != "search-input":
-            return
-        self._search_query = event.value
-        self._run_search()
-        # Drop focus off the input so n/p reach the App's bindings (the viewer is
-        # can_focus=False, so we blur rather than focus it). The bar stays visible
-        # as a status line (query + position) while a search is active, so
-        # movement is legible; an empty query clears it (see _run_search).
+        if event.input.id == "search-input":
+            self._search_query = event.value
+            self._run_search()
+            # Drop focus off the input so n/N reach the App's bindings (the
+            # viewer is can_focus=False, so we blur rather than focus it). The
+            # bar stays visible as a status line (query + position) while a
+            # search is active; an empty query clears it (see _run_search).
+            self.set_focus(None)
+        elif event.input.id == "command-input":
+            self._run_command(event.value)
+        # else: ignore an Ask AI Input.Submitted bubbling up.
+
+    def _run_command(self, raw: str) -> None:
+        """Dispatch a `:` command, then close the command line."""
+        command = parse_command(raw)
+        self.query_one("#command-bar").display = False
+        self.set_focus(None)
+        if command == "quit":
+            self.exit()  # exit() is sync; App.action_quit is a coroutine
+        elif command == "help":
+            self.action_help()
+        elif raw.strip():
+            self.notify(f"未知のコマンド: :{raw.strip()}", severity="warning")
+
+    def _cancel_command(self) -> None:
+        """Esc in the command box: close it without running anything."""
+        self.query_one("#command-bar").display = False
         self.set_focus(None)
 
     def _cancel_search_edit(self) -> None:
@@ -496,12 +601,12 @@ class MdViewerApp(App):
     def _run_search(self) -> None:
         """Recompute hits for `_search_query` and focus the first one.
 
-        A *hit* is one matched substring (block + offset span); `n`/`p` step
+        A *hit* is one matched substring (block + offset span); `n`/`N` step
         through hits one at a time, so a block with several matches is walked
         occurrence-by-occurrence, not skipped in one jump. Every hit is washed in
         colour; the current one is brighter. `_search_matches` is the de-duped
         list of blocks that contain a hit (for whole-block restore). An empty
-        query clears the search and restores heading navigation.
+        query clears the search (`n`/`N` then become no-ops until the next `/`).
         """
         viewer = self.query_one(MarkdownViewer)
         count = self.query_one("#search-count", Static)
@@ -531,7 +636,7 @@ class MdViewerApp(App):
                 ]
                 if spans:
                     widgets.append(w)
-                    # line index of each match within the block, so n/p can scroll
+                    # line index of each match within the block, so n/N can scroll
                     # to the matched line (preformatted blocks are one row per line).
                     hits.extend((w, s, e, text.count("\n", 0, s)) for s, e in spans)
         except TimeoutError:
@@ -647,7 +752,7 @@ class MdViewerApp(App):
 
         The old document's matched widgets are gone with the swapped-out tree, so
         there is nothing to restore — just forget the stale hits/highlights and
-        hide the bar (the matched-widget refs would otherwise leave `n`/`p`
+        hide the bar (the matched-widget refs would otherwise leave `n`/`N`
         stepping detached widgets in the new document). `_search_query` is kept so
         `/` reopens prefilled.
         """

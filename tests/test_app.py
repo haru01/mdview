@@ -117,7 +117,7 @@ def test_accent_palette_is_orange_and_green() -> None:
     asyncio.run(driver())
 
 
-def test_n_and_p_navigate_between_headings() -> None:
+def test_brackets_navigate_between_headings() -> None:
     import asyncio
 
     md = FIXTURES / "sample.md"
@@ -133,20 +133,20 @@ def test_n_and_p_navigate_between_headings() -> None:
             viewer = app.query_one(MarkdownViewer)
             start = viewer.scroll_y
 
-            await pilot.press("n")
+            await pilot.press("right_square_bracket")
             await pilot.pause()
-            after_first_n = viewer.scroll_y
-            assert after_first_n > start, "`n` should move scroll down to next heading"
+            after_first = viewer.scroll_y
+            assert after_first > start, "`]` should move scroll down to next heading"
 
-            await pilot.press("n")
+            await pilot.press("right_square_bracket")
             await pilot.pause()
-            after_second_n = viewer.scroll_y
-            assert after_second_n > after_first_n, "`n` should advance further"
+            after_second = viewer.scroll_y
+            assert after_second > after_first, "`]` should advance further"
 
-            await pilot.press("p")
+            await pilot.press("left_square_bracket")
             await pilot.pause()
-            after_p = viewer.scroll_y
-            assert after_p < after_second_n, "`p` should move back to previous heading"
+            after_prev = viewer.scroll_y
+            assert after_prev < after_second, "`[` should move back to previous heading"
 
     asyncio.run(driver())
 
@@ -254,7 +254,7 @@ def test_markdown_link_with_anchor_jumps_to_section() -> None:
 
 
 def test_back_returns_to_previous_file() -> None:
-    """`b` keybinding pops history and reloads the prior file."""
+    """`Backspace` keybinding pops history and reloads the prior file."""
     import asyncio
 
     from textual.widgets import Markdown, MarkdownViewer
@@ -276,7 +276,7 @@ def test_back_returns_to_previous_file() -> None:
                     break
             assert app._md_path.name == "link_b.md"
 
-            await pilot.press("b")
+            await pilot.press("backspace")
             for _ in range(10):
                 await pilot.pause()
                 if app._md_path.name == "link_a.md":
@@ -339,10 +339,10 @@ def test_ask_ai_without_selection_notifies(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_question_mark_toggles_help_and_h_does_not() -> None:
-    """`?` opens the help panel; `h` is Ask AI now and must not open help."""
+    """`?` opens the help screen; `h` is Ask AI now and must not open help."""
     import asyncio
 
-    from textual.widgets import HelpPanel
+    from mdview.help import HelpScreen
 
     md = FIXTURES / "sample.md"
 
@@ -353,14 +353,14 @@ def test_question_mark_toggles_help_and_h_does_not() -> None:
             await pilot.pause()
             await pilot.press("question_mark")
             await pilot.pause()
-            assert app.screen.query(HelpPanel), "`?` should open the help panel"
+            assert isinstance(app.screen, HelpScreen), "`?` should open the help screen"
             await pilot.press("question_mark")
             await pilot.pause()
-            assert not app.screen.query(HelpPanel), "`?` should toggle the help panel off"
+            assert not isinstance(app.screen, HelpScreen), "`?` should close the help screen"
             # `h` (no selection) warns for Ask AI rather than opening help.
             await pilot.press("h")
             await pilot.pause()
-            assert not app.screen.query(HelpPanel), "`h` should no longer open help"
+            assert not isinstance(app.screen, HelpScreen), "`h` should not open help"
 
     asyncio.run(driver())
 
@@ -807,8 +807,8 @@ def test_diff_hunk_selection_yields_clean_unified_diff() -> None:
     asyncio.run(driver())
 
 
-def test_n_navigates_between_file_headings() -> None:
-    """With @@ no longer a heading, `n` jumps between the `##` file headings."""
+def test_bracket_navigates_between_file_headings() -> None:
+    """With @@ no longer a heading, `]` jumps between the `##` file headings."""
     import asyncio
 
     from textual.widgets import MarkdownViewer
@@ -829,15 +829,15 @@ def test_n_navigates_between_file_headings() -> None:
             await pilot.pause()
             viewer = app.query_one(MarkdownViewer)
             start = viewer.scroll_y
-            await pilot.press("n")
+            await pilot.press("right_square_bracket")
             await pilot.pause()
-            assert viewer.scroll_y > start, "`n` should jump to the next file heading"
+            assert viewer.scroll_y > start, "`]` should jump to the next file heading"
 
     asyncio.run(driver())
 
 
-def test_s_navigates_between_hunks() -> None:
-    """`s` jumps to the next hunk within the diff (hunks are no longer headings)."""
+def test_brace_navigates_between_hunks() -> None:
+    """`}` jumps to the next hunk within the diff (hunks are no longer headings)."""
     import asyncio
 
     from textual.widgets import MarkdownViewer
@@ -859,9 +859,9 @@ def test_s_navigates_between_hunks() -> None:
             await pilot.pause()
             viewer = app.query_one(MarkdownViewer)
             start = viewer.scroll_y
-            await pilot.press("s")
+            await pilot.press("right_curly_bracket")
             await pilot.pause()
-            assert viewer.scroll_y > start, "`s` should jump to the next hunk"
+            assert viewer.scroll_y > start, "`}` should jump to the next hunk"
 
     asyncio.run(driver())
 
@@ -1054,6 +1054,43 @@ def test_expand_and_shrink_selection_with_keyboard() -> None:
                 await pilot.press("V")
                 await pilot.pause()
             assert not (app.screen.get_selected_text() or ""), "shrinking past the block clears"
+
+    asyncio.run(driver())
+
+
+def test_escape_clears_selection_and_next_v_starts_small() -> None:
+    """Esc drops the current selection and resets the ladder; next `v` is small."""
+    import asyncio
+
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("v")
+            await pilot.pause()
+            small = app.screen.get_selected_text() or ""
+            assert small, "first `v` selects the smallest block"
+            await pilot.press("v")
+            await pilot.press("v")
+            await pilot.pause()
+            grown = app.screen.get_selected_text() or ""
+            assert len(grown) > len(small), "selection grew with more `v`"
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not (app.screen.get_selected_text() or ""), "Esc clears the selection"
+            assert app._sel_scopes is None
+            assert app._sel_index == 0
+            assert app._sel_anchor is None
+
+            # The ladder is reset, so `v` restarts at the smallest block.
+            await pilot.press("v")
+            await pilot.pause()
+            restarted = app.screen.get_selected_text() or ""
+            assert restarted.strip() == small.strip(), "next `v` starts small again"
 
     asyncio.run(driver())
 
@@ -1329,7 +1366,7 @@ def test_search_aborts_on_catastrophic_pattern() -> None:
 
 
 def test_navigation_clears_active_search(tmp_path) -> None:
-    """Following a link (or `b` back) drops the previous doc's search state."""
+    """Following a link (or Backspace back) drops the previous doc's search state."""
     import asyncio
 
     a = tmp_path / "a.md"
@@ -1403,7 +1440,7 @@ def test_search_double_at_matches_only_hunks() -> None:
 
 
 def test_search_current_marker_moves_with_n() -> None:
-    """The distinct `.search-current` highlight follows `n`/`p`."""
+    """The distinct `.search-current` highlight follows `n`/`N`."""
     import asyncio
 
     from textual.widgets import MarkdownViewer
@@ -1468,8 +1505,8 @@ def test_search_anchored_at_matches_only_file_headings() -> None:
     asyncio.run(driver())
 
 
-def test_search_then_n_p_walk_matches() -> None:
-    """While a search is active, `n`/`p` step through the matches."""
+def test_search_then_n_N_walk_matches() -> None:
+    """While a search is active, `n`/`N` step through the matches."""
     import asyncio
 
     from textual.widgets import MarkdownViewer
@@ -1486,15 +1523,15 @@ def test_search_then_n_p_walk_matches() -> None:
             await pilot.pause()
             assert viewer.scroll_y > after_search, "`n` should advance to the next match"
             forward = viewer.scroll_y
-            await pilot.press("p")
+            await pilot.press("N")
             await pilot.pause()
-            assert viewer.scroll_y < forward, "`p` should step back to the previous match"
+            assert viewer.scroll_y < forward, "`N` should step back to the previous match"
 
     asyncio.run(driver())
 
 
 def test_empty_search_clears_matches() -> None:
-    """Submitting an empty query clears the filter; `n`/`p` revert to headings."""
+    """Submitting an empty query clears the filter; `n`/`N` become no-ops."""
     import asyncio
 
     async def driver() -> None:
@@ -1553,5 +1590,317 @@ def test_search_colours_only_the_matched_substring() -> None:
             # a highlight span covers exactly "import" — not the whole paragraph
             assert any(s.start == start and s.end == end for s in spans), spans
             assert not any(s.start == 0 and s.end == len(text) for s in spans), spans
+
+    asyncio.run(driver())
+
+
+# --- `:` command line, help screen, Esc/cancel, paging ----------------------
+
+
+async def _submit_command(pilot, text: str) -> None:
+    """Open the `:` bar, type *text*, and submit it."""
+    from textual.widgets import Input
+
+    await pilot.press("colon")
+    await pilot.pause()
+    pilot.app.query_one("#command-input", Input).value = text
+    await pilot.press("enter")
+    await pilot.pause()
+
+
+def test_colon_q_quits() -> None:
+    """`:q` exits the app (and so does single `q`)."""
+    import asyncio
+
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            exits: list[bool] = []
+            app.exit = lambda *a, **k: exits.append(True)  # type: ignore[method-assign]
+            await _submit_command(pilot, "q")
+            assert exits == [True], "`:q` should call exit()"
+            assert app.query_one("#command-bar").display is False
+            await pilot.press("q")
+            await pilot.pause()
+            assert exits == [True, True], "single `q` should also exit"
+
+    asyncio.run(driver())
+
+
+def test_help_screen_scrolls_with_keys_not_the_background() -> None:
+    """Movement keys scroll the help modal's body, not the document behind it."""
+    import asyncio
+
+    from textual.containers import VerticalScroll
+    from textual.widgets import MarkdownViewer
+
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        # A small screen makes the cheat-sheet overflow so it actually scrolls.
+        async with app.run_test(size=(48, 10)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            viewer = app.query_one(MarkdownViewer)
+            bg = viewer.scroll_y
+            await pilot.press("question_mark")
+            await pilot.pause()
+            body = app.screen.query_one("#help-body", VerticalScroll)
+            assert body.max_scroll_y > 0, "help should overflow at this size"
+            await pilot.press("space")
+            await pilot.pause()
+            assert body.scroll_y > 0, "Space scrolls the help body"
+            assert viewer.scroll_y == bg, "the background document must not move"
+            await pilot.press("g")
+            await pilot.pause()
+            assert body.scroll_y == 0, "`g` returns the help body to the top"
+
+    asyncio.run(driver())
+
+
+def test_toc_movement_keys_do_not_scroll_background() -> None:
+    """In the TOC modal, page/top/bottom keys drive the tree, not the document."""
+    import asyncio
+
+    from textual.widgets import MarkdownViewer
+
+    from mdview.toc import TocScreen
+
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(60, 12)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            viewer = app.query_one(MarkdownViewer)
+            assert viewer.max_scroll_y > 0, "document must be scrollable to be meaningful"
+            await pilot.press("t")
+            await pilot.pause()
+            assert isinstance(app.screen, TocScreen)
+            bg = viewer.scroll_y
+            for key in ("d", "G", "f", "pagedown"):
+                await pilot.press(key)
+                await pilot.pause()
+            assert viewer.scroll_y == bg, "TOC movement keys must not scroll the document"
+
+    asyncio.run(driver())
+
+
+def test_colon_h_opens_help_screen() -> None:
+    """`:h` opens the help screen; Esc closes it without quitting."""
+    import asyncio
+
+    from mdview.help import HelpScreen
+
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            await _submit_command(pilot, "h")
+            assert isinstance(app.screen, HelpScreen), "`:h` should open help"
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not isinstance(app.screen, HelpScreen), "Esc closes the help screen"
+
+    asyncio.run(driver())
+
+
+def test_unknown_command_notifies_and_does_not_quit() -> None:
+    """An unrecognised `:cmd` warns and closes the bar; it must not exit."""
+    import asyncio
+
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            exits: list[bool] = []
+            app.exit = lambda *a, **k: exits.append(True)  # type: ignore[method-assign]
+            await _submit_command(pilot, "nope")
+            assert exits == [], "unknown command must not quit"
+            assert app.query_one("#command-bar").display is False
+
+    asyncio.run(driver())
+
+
+def test_escape_does_not_quit_at_idle() -> None:
+    """Esc with nothing active is a no-op — crucially, it must not exit."""
+    import asyncio
+
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            exits: list[bool] = []
+            app.exit = lambda *a, **k: exits.append(True)  # type: ignore[method-assign]
+            await pilot.press("escape")
+            await pilot.pause()
+            assert exits == [], "Esc must not quit the app"
+
+    asyncio.run(driver())
+
+
+def test_escape_clears_active_search_without_quitting() -> None:
+    """With a search active, Esc clears it (bar hidden, hits dropped); no quit."""
+    import asyncio
+
+    async def driver() -> None:
+        app = _diff_app(_MULTI_FILE_DIFF)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            exits: list[bool] = []
+            app.exit = lambda *a, **k: exits.append(True)  # type: ignore[method-assign]
+            await _submit_search(pilot, "old")
+            assert app._search_hits, "search should be active"
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app._search_hits == [], "Esc should clear the search"
+            assert app.query_one("#search-bar").display is False
+            assert exits == [], "Esc must not quit while clearing a search"
+
+    asyncio.run(driver())
+
+
+def test_command_line_escape_cancels_without_running() -> None:
+    """Esc in the `:` box closes it without dispatching anything or quitting."""
+    import asyncio
+
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            exits: list[bool] = []
+            app.exit = lambda *a, **k: exits.append(True)  # type: ignore[method-assign]
+            await pilot.press("colon")
+            await pilot.pause()
+            assert app.query_one("#command-bar").display is True
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.query_one("#command-bar").display is False
+            assert exits == [], "cancelling the command line must not quit"
+
+    asyncio.run(driver())
+
+
+def test_paging_keys_scroll() -> None:
+    """`f`/Space page down, `b`/PageUp page up."""
+    import asyncio
+
+    from textual.widgets import MarkdownViewer
+
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            viewer = app.query_one(MarkdownViewer)
+            start = viewer.scroll_y
+            await pilot.press("f")
+            await pilot.pause()
+            down = viewer.scroll_y
+            assert down > start, "`f` should page down"
+            await pilot.press("b")
+            await pilot.pause()
+            assert viewer.scroll_y < down, "`b` should page back up"
+
+    asyncio.run(driver())
+
+
+def test_space_navigates_headings_in_prose() -> None:
+    """In a normal doc, Space/Shift+Space step between headings."""
+    import asyncio
+
+    from textual.widgets import MarkdownViewer
+
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            viewer = app.query_one(MarkdownViewer)
+            start = viewer.scroll_y
+            await pilot.press("space")
+            await pilot.pause()
+            first = viewer.scroll_y
+            assert first > start, "Space should jump to the next heading"
+            await pilot.press("space")
+            await pilot.pause()
+            second = viewer.scroll_y
+            assert second > first, "Space should advance further"
+            await pilot.press("shift+space")
+            await pilot.pause()
+            assert viewer.scroll_y < second, "Shift+Space should step back"
+
+    asyncio.run(driver())
+
+
+def test_space_walks_files_and_hunks_in_diff() -> None:
+    """In a diff, Space stops at file headings and `@@` hunks (both)."""
+    import asyncio
+
+    from textual.widgets import MarkdownViewer
+
+    async def driver() -> None:
+        app = _diff_app(_MULTI_FILE_DIFF)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            viewer = app.query_one(MarkdownViewer)
+            # The combined target set is headings + hunks, so Space has more
+            # stops than the heading-only `]` walk.
+            sections = app._section_targets()
+            headings = app._all_headings()
+            assert len(sections) > len(headings), "diff sections include hunks too"
+            start = viewer.scroll_y
+            await pilot.press("space")
+            await pilot.pause()
+            assert viewer.scroll_y > start, "Space should advance through the diff"
+
+    asyncio.run(driver())
+
+
+def test_n_is_noop_without_active_search() -> None:
+    """`n`/`N` only move with a search active; `]` always walks headings."""
+    import asyncio
+
+    from textual.widgets import MarkdownViewer
+
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            viewer = app.query_one(MarkdownViewer)
+            start = viewer.scroll_y
+            await pilot.press("n")
+            await pilot.pause()
+            assert viewer.scroll_y == start, "`n` should do nothing without a search"
+            await pilot.press("right_square_bracket")
+            await pilot.pause()
+            assert viewer.scroll_y > start, "`]` should still jump to the next heading"
 
     asyncio.run(driver())

@@ -207,6 +207,32 @@ TocScreen {
     height: 1fr;
 }
 
+/* ===== Help modal =====
+ * `?` / `:h` open a centered cheat-sheet of the key map (see help.py).
+ */
+
+HelpScreen {
+    align: center middle;
+    background: $surface 60%;
+}
+
+/* Percentage size (not auto): Textual can't measure a Rich grid's intrinsic
+ * width, so `width: auto` collapses the dialog to 0. */
+#help-dialog {
+    width: 80%;
+    height: 80%;
+    background: $panel;
+    border: round $orange;
+    padding: 1 2;
+}
+
+/* 1fr so the body fills the fixed-height dialog and *scrolls* when the
+ * cheat-sheet is taller than the screen, instead of overflowing unclipped. */
+#help-body {
+    width: 1fr;
+    height: 1fr;
+}
+
 .mdview-image {
     margin: 1 0;
     height: auto;
@@ -293,7 +319,34 @@ AskAiScreen {
 /* Match highlighting is per-word: app._highlight_block washes just the matched
  * substrings inside each block (subtle green for the set, brighter for the
  * current match), so there is no whole-block CSS rule. `.search-current` stays
- * as a no-style marker class for the block n/p last landed on. */
+ * as a no-style marker class for the block n/N last landed on. */
+
+/* ===== `:` command line =====
+ * Same docked/hidden pattern as the search bar (action_command flips `display`).
+ * A leading `:` prompt, then the typed command (e.g. `q`, `h`).
+ */
+
+#command-bar {
+    dock: bottom;
+    height: 1;
+    display: none;
+    background: $panel;
+}
+
+#command-prompt {
+    width: auto;
+    height: 1;
+    padding: 0 0 0 1;
+    color: $text-muted;
+}
+
+#command-input {
+    width: 1fr;
+    height: 1;
+    border: none;
+    background: $panel;
+    padding: 0 1 0 0;
+}
 
 /* ===== Image zoom overlay =====
  * Click a rendered SVG/diagram to blow it up to (almost) the full screen over a

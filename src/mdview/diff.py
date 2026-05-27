@@ -9,7 +9,7 @@ model (`parse_diff` → `list[FileDiff]`). Two consumers render that model:
 - the non-TTY path renders the model directly with Rich.
 
 `diff_to_markdown` keeps each file as a `## @ ` heading (so the TOC lists changed
-files and `n`/`p` jump between them; the `@ ` prefix is the `/` search hook —
+files and `]`/`[` jump between them; the `@ ` prefix is the `/` search hook —
 see `mdview.app`) but, unlike before, does **not** turn `@@` hunk headers into
 `###` headings — the hunk body simply lives in a ```diff fence that the TUI
 replaces. The transform is purely deterministic: same input always yields the
