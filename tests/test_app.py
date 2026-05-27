@@ -459,6 +459,64 @@ def test_ask_ai_opens_modal_with_selection(tmp_path: Path, monkeypatch: pytest.M
     asyncio.run(driver())
 
 
+def test_ask_ai_context_click_opens_full_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Clicking the Ask AI context opens a nested modal with the full selection."""
+    import asyncio
+    import os
+    import shutil
+
+    from tests.test_ai import _fake_claude
+    from mdview.ask_ai import AskAiScreen, SelectionViewScreen
+
+    claude = _fake_claude(tmp_path)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    shutil.copy(claude, bindir / "claude")
+    (bindir / "claude").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+
+    # A long body so the context preview truncates and the popup adds value.
+    md = "# Title\n\n" + "word " * 100 + "\n"
+
+    async def driver() -> None:
+        app = MdViewerApp(content=md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            app.screen.text_select_all()
+            await pilot.pause()
+            selection = app.screen.get_selected_text()
+            assert selection and len(selection) > 200, "selection should exceed the preview cap"
+            await pilot.press("h")
+            await pilot.pause()
+            assert isinstance(app.screen, AskAiScreen)
+
+            await pilot.click("#ask-ai-context")
+            await pilot.pause()
+            assert isinstance(app.screen, SelectionViewScreen), "click opens the full-text modal"
+            assert app.screen._text == selection, "modal holds the full (untruncated) selection"
+            # Non-diff prose is re-rendered with a Markdown widget (same colours
+            # and line spacing as the main view), not a syntax-highlighted Static.
+            from textual.widgets import Markdown
+
+            assert app.screen.query("#selection-view-body Markdown"), "renders via Markdown"
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert isinstance(app.screen, AskAiScreen), "Esc returns to Ask AI (no quit)"
+
+            # `q` also closes the full-text modal.
+            await pilot.click("#ask-ai-context")
+            await pilot.pause()
+            await pilot.press("q")
+            await pilot.pause()
+            assert isinstance(app.screen, AskAiScreen)
+
+    asyncio.run(driver())
+
+
 def test_ask_ai_toggling_svg_refocuses_input(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

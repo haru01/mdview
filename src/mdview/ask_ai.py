@@ -7,13 +7,62 @@ from pathlib import Path
 
 from textual import work
 from textual.app import ComposeResult
-from textual.containers import ScrollableContainer, Vertical, VerticalScroll
+from textual.containers import Container, ScrollableContainer, Vertical, VerticalScroll
 from textual.widgets import Checkbox, Input, LoadingIndicator, Markdown, Static
 
 from mdview.ai import AiQueryError, ask_claude
+from mdview.diffview import is_diff_text, render_selection
 from mdview.image_zoom import ZoomableImage
 from mdview.scroll_modal import ScrollableModalScreen
 from mdview.svg import SvgRenderError, extract_svgs, rasterize_svg
+
+
+class SelectionViewScreen(ScrollableModalScreen):
+    """Nested modal showing the full selected text.
+
+    The Ask AI context line only previews the selection (whitespace-collapsed,
+    truncated); clicking it opens this to read the whole thing. A diff selection
+    gets the delta look (`render_selection`); everything else is re-rendered with
+    a Markdown widget so it shares the *main view's* colours and line spacing
+    (theme.css styles `Markdown`/`MarkdownBlock` by type, so a bare `Markdown`
+    here inherits them). Scrollable via the inherited movement keys.
+    """
+
+    BINDINGS = [
+        ("escape", "dismiss", "Close"),
+        ("q", "dismiss", "Close"),
+    ]
+
+    def __init__(self, text: str) -> None:
+        super().__init__()
+        self._text = text
+
+    def compose(self) -> ComposeResult:
+        with Container(id="selection-view-dialog") as dialog:
+            dialog.border_title = "選択テキスト"
+            with VerticalScroll(id="selection-view-body"):
+                if is_diff_text(self._text):
+                    yield Static(render_selection(self._text))
+                else:
+                    yield Markdown(self._text)
+
+    def scroll_region(self) -> ScrollableContainer:
+        return self.query_one("#selection-view-body", VerticalScroll)
+
+    def action_dismiss(self) -> None:
+        self.dismiss()
+
+
+class _SelectionContext(Static):
+    """The Ask AI context line. Shows the truncated preview but holds the full
+    selection; clicking it opens `SelectionViewScreen` (cf. ZoomableImage)."""
+
+    def __init__(self, preview: str, *, full: str, **kwargs) -> None:
+        super().__init__(preview, **kwargs)
+        self._full = full
+
+    def on_click(self) -> None:
+        self.app.push_screen(SelectionViewScreen(self._full))
 
 
 class AskAiScreen(ScrollableModalScreen):
@@ -38,7 +87,9 @@ class AskAiScreen(ScrollableModalScreen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="ask-ai-dialog"):
-            yield Static(self._selection_preview(), id="ask-ai-context")
+            yield _SelectionContext(
+                self._selection_preview(), full=self._selection, id="ask-ai-context"
+            )
             yield Input(
                 value="わかりやすく解説して",
                 placeholder="この抜粋について質問… (Enterで送信, Escで閉じる)",
@@ -55,7 +106,7 @@ class AskAiScreen(ScrollableModalScreen):
         text = " ".join(self._selection.split())
         if len(text) > 200:
             text = text[:200] + "…"
-        return f"選択: {text}"
+        return f"選択: {text}  （クリックで全文）"
 
     def on_mount(self) -> None:
         self.query_one("#ask-ai-input", Input).focus()

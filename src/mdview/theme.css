@@ -263,6 +263,32 @@ AskAiScreen {
     margin: 0 0 1 0;
 }
 
+/* Clickable: opens SelectionViewScreen with the full selection. */
+#ask-ai-context:hover {
+    background: $boost;
+    color: $text;
+}
+
+/* ===== Selection full-text modal (click the Ask AI context) ===== */
+
+SelectionViewScreen {
+    align: center middle;
+    background: $surface 60%;
+}
+
+#selection-view-dialog {
+    width: 80%;
+    height: 80%;
+    background: $panel;
+    border: round $orange;
+    padding: 1 2;
+}
+
+#selection-view-body {
+    width: 1fr;
+    height: 1fr;
+}
+
 #ask-ai-svg-toggle {
     margin: 1 0 0 0;
     border: none;

@@ -20,7 +20,7 @@ from rich.rule import Rule
 from rich.syntax import Syntax
 from rich.text import Text
 
-from mdview.diff import FileDiff, Hunk
+from mdview.diff import FileDiff, Hunk, looks_like_diff, parse_diff, parse_hunk_lines
 
 # Background bars for changed lines (dark, low-saturation so syntax fg stays
 # readable). Exposed as constants so tests and themes can reference them.
@@ -120,3 +120,23 @@ def render_file(file: FileDiff) -> RenderableType:
 def render_diff(files: list[FileDiff]) -> RenderableType:
     """The whole diff, delta-styled, for the non-TTY path."""
     return Group(*(render_file(file) for file in files))
+
+
+def is_diff_text(text: str) -> bool:
+    """Whether a selection should get the delta look — a unified diff, or a bare
+    ``@@`` hunk (which is what a selected `DiffHunk` yields) — rather than being
+    re-rendered as Markdown."""
+    return looks_like_diff(text) or text.lstrip().startswith("@@")
+
+
+def render_selection(text: str) -> RenderableType:
+    """Delta-style render of a *diff* selection for the Ask AI full-text popup.
+
+    The caller gates on `is_diff_text`; non-diff selections are re-rendered with
+    a Markdown widget instead (so they match the main view's colours/spacing),
+    which is why this only handles the diff case.
+    """
+    files = parse_diff(text)
+    if files:
+        return render_diff(files)
+    return render_hunk(parse_hunk_lines(text))
