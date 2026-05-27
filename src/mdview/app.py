@@ -132,6 +132,11 @@ class MdViewerApp(App):
         Binding("shift+space", "prev_section", "Prev section", show=False),
         Binding("right_square_bracket", "next_heading", "Next heading", show=True),
         Binding("left_square_bracket", "prev_heading", "Prev heading", show=False),
+        # Ctrl+]/Ctrl+[ narrow to level-2 (`##`) section headings. (Ctrl+[ is the
+        # ESC byte in legacy terminals, so "prev H2" only works where the kitty
+        # keyboard protocol is active; `[` stays the reliable all-heading prev.)
+        Binding("ctrl+right_square_bracket", "next_h2", "Next section (H2)", show=False),
+        Binding("ctrl+left_square_bracket", "prev_h2", "Prev section (H2)", show=False),
         Binding("right_curly_bracket", "next_hunk", "Next hunk", show=False),
         Binding("left_curly_bracket", "prev_hunk", "Prev hunk", show=False),
         Binding("t", "open_toc", "TOC", show=True),
@@ -493,6 +498,12 @@ class MdViewerApp(App):
     def action_prev_heading(self) -> None:
         self._jump_to(self._all_headings(), direction=-1)
 
+    def action_next_h2(self) -> None:
+        self._jump_to(self._headings_at_level(2), direction=1)
+
+    def action_prev_h2(self) -> None:
+        self._jump_to(self._headings_at_level(2), direction=-1)
+
     def action_next_hunk(self) -> None:
         self._jump_to(list(self.query_one(MarkdownViewer).document.query(DiffHunk)), direction=1)
 
@@ -514,6 +525,11 @@ class MdViewerApp(App):
 
     def _all_headings(self) -> list[Widget]:
         return list(self.query_one(MarkdownViewer).document.query(MarkdownHeader))
+
+    def _headings_at_level(self, level: int) -> list[Widget]:
+        # Textual mounts MarkdownH1..H6, each carrying a `LEVEL` class attr; a
+        # diff's `## @ file` headings are H2, so Opt+]/[ walk files there.
+        return [h for h in self._all_headings() if getattr(h, "LEVEL", None) == level]
 
     def _jump_to(self, targets: list[Widget], *, direction: int) -> None:
         viewer = self.query_one(MarkdownViewer)

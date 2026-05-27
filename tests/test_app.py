@@ -151,6 +151,48 @@ def test_brackets_navigate_between_headings() -> None:
     asyncio.run(driver())
 
 
+def test_ctrl_bracket_navigates_only_h2_headings() -> None:
+    """Ctrl+]/Ctrl+[ jump between `##` (H2) sections, skipping H1/H3."""
+    import asyncio
+
+    from textual.widgets import MarkdownViewer
+
+    md = (
+        "# Title\n\nintro\n\n"
+        "## Section A\n\n" + "aaa\n\n" * 20
+        + "### Sub A1\n\n" + "xxx\n\n" * 20
+        + "## Section B\n\n" + "bbb\n\n" * 20
+        + "### Sub B1\n\n" + "yyy\n\n" * 20
+    )
+
+    async def driver() -> None:
+        app = MdViewerApp(content=md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            viewer = app.query_one(MarkdownViewer)
+            assert len(app._headings_at_level(2)) == 2, "two ## sections"
+            assert len(app._all_headings()) == 5, "H1 + 2×H2 + 2×H3"
+            sub_a1_y = app._headings_at_level(3)[0].virtual_region.y
+            section_b_y = app._headings_at_level(2)[1].virtual_region.y
+
+            # Plain `]` stops at every heading, so the 2nd press lands on the H3.
+            await pilot.press("right_square_bracket")
+            await pilot.press("right_square_bracket")
+            await pilot.pause()
+            assert abs(viewer.scroll_y - sub_a1_y) <= 2, "`]` stops at the H3"
+
+            # Ctrl+] skips the H3: from the top, the 2nd press reaches Section B.
+            await pilot.press("g")
+            await pilot.pause()
+            await pilot.press("ctrl+right_square_bracket")
+            await pilot.press("ctrl+right_square_bracket")
+            await pilot.pause()
+            assert abs(viewer.scroll_y - section_b_y) <= 2, "Ctrl+] skips the H3 to the 2nd H2"
+
+    asyncio.run(driver())
+
+
 def test_table_widget_is_rendered() -> None:
     """Sample has a markdown table; Textual must materialize it as MarkdownTable."""
     import asyncio

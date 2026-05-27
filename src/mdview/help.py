@@ -28,7 +28,7 @@ HELP_SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
         [
             ("j ↓ / k ↑", "行送り"),
             ("d / u", "半画面 送り/戻し"),
-            ("f Space / b", "1画面 送り/戻し"),
+            ("f / b", "1画面 送り/戻し"),
             ("g < / G >", "先頭 / 末尾"),
         ],
     ),
@@ -44,6 +44,7 @@ HELP_SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
         [
             ("Space / S-Space", "次 / 前（見出し、diff ではファイル+ハンク）"),
             ("] / [", "次 / 前見出し（diff ではファイル）"),
+            ("^] / ^[", "次 / 前 見出し2（## セクション）"),
             ("} / {", "次 / 前ハンク（diff）"),
             ("t", "目次"),
         ],
