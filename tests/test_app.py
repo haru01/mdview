@@ -2050,3 +2050,83 @@ def test_n_is_noop_without_active_search() -> None:
             assert viewer.scroll_y > start, "`]` should still jump to the next heading"
 
     asyncio.run(driver())
+
+
+def test_drag_selection_is_not_overwritten_by_click() -> None:
+    """ドラッグ(押下位置≠離した位置)の自由選択を on_click が上書きしないこと。"""
+    import asyncio
+
+    from textual.events import Click
+    from textual.geometry import Offset
+    from textual.selection import Selection
+    from textual.widgets import MarkdownViewer
+    from textual.widgets._markdown import MarkdownParagraph
+
+    async def driver() -> None:
+        app = MdViewerApp(content="# Title\n\nHello world paragraph for selection.\n")
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            viewer = app.query_one(MarkdownViewer)
+            para = next(iter(viewer.document.query(MarkdownParagraph)))
+
+            # 押下位置を実イベントで記録(on_mouse_down が配線されている確認も兼ねる)
+            await pilot.mouse_down(para, offset=(0, 0))
+            down = app._mouse_down_offset
+            assert down is not None, "on_mouse_down should record the press offset"
+
+            # ドラッグが作った細かい選択を模した番兵を置く
+            sentinel = {para: Selection(Offset(0, 0), Offset(5, 0))}
+            app.screen.selections = sentinel
+            app._sel_scopes = None
+
+            # ドラッグ終了時に発火する Click を、押下位置とは別のセルで流す
+            click = Click(
+                widget=para,
+                x=0,
+                y=0,
+                delta_x=0,
+                delta_y=0,
+                button=0,
+                shift=False,
+                meta=False,
+                ctrl=False,
+                screen_x=down.x + 5,
+                screen_y=down.y,
+                chain=1,
+            )
+            app.on_click(click)
+            await pilot.pause()
+
+            # 自由選択が残り、セマンティックの梯子は始まっていない
+            assert app.screen.selections == sentinel, (
+                "a drag's freeform selection must survive the trailing Click"
+            )
+            assert app._sel_scopes is None, "drag must not start the semantic ladder"
+
+    asyncio.run(driver())
+
+
+def test_stationary_click_still_selects_block() -> None:
+    """ドラッグなしの単発クリックは従来どおりブロック単位のセマンティック選択になること。"""
+    import asyncio
+
+    from textual.widgets import MarkdownViewer
+    from textual.widgets._markdown import MarkdownParagraph
+
+    async def driver() -> None:
+        app = MdViewerApp(content="# Title\n\nHello world paragraph for selection.\n")
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            viewer = app.query_one(MarkdownViewer)
+            para = next(iter(viewer.document.query(MarkdownParagraph)))
+
+            # pilot.click は MouseDown→MouseUp→Click を同一オフセットで送る = 静止クリック
+            await pilot.click(para, offset=(2, 0))
+            await pilot.pause()
+
+            assert app._sel_scopes is not None, "a stationary click should start a selection"
+            assert app.screen.get_selected_text(), "the clicked block's text should be selected"
+
+    asyncio.run(driver())

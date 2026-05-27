@@ -15,6 +15,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.css.query import NoMatches
+from textual.geometry import Offset
 from textual.selection import SELECT_ALL, Selection
 from textual.widget import Widget
 from textual.widgets import Input, Label, Markdown, MarkdownViewer, Static
@@ -160,6 +161,10 @@ class MdViewerApp(App):
         self._sel_anchor: Widget | None = None
         self._sel_scopes: list[list[Widget]] | None = None
         self._sel_index: int = 0
+        # マウス押下時のスクリーン座標。on_click でクリック(押下位置と一致)と
+        # ドラッグ(不一致)を区別するために使う。ドラッグ時はフレームワークの
+        # 自由選択を残したいので、on_click はセマンティック選択を適用しない。
+        self._mouse_down_offset: Offset | None = None
         # `/` search state. `_search_query` is the last submitted pattern (so the
         # bar reopens prefilled); `_search_matches` is the matched blocks in
         # document order. While a search is active `n`/`N` walk the matches
@@ -769,6 +774,11 @@ class MdViewerApp(App):
         self.query_one("#cmdline-count", Static).update("")
         self.query_one("#cmdline-bar").display = False
 
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        # 押下位置を覚えておき、on_click でクリック/ドラッグを判別する。
+        # 本体のドラッグ選択は Screen 側で処理されるので、ここでは記録のみ。
+        self._mouse_down_offset = event.screen_offset
+
     def on_click(self, event: events.Click) -> None:
         """Mouse-driven semantic selection.
 
@@ -776,7 +786,20 @@ class MdViewerApp(App):
         expands one rung along the Markdown structure. Clicking a different
         block restarts the ladder there. (A stationary click clears any drag
         selection in the framework's MouseUp handler first; we then set ours.)
+
+        A *drag* (press and release on different cells) is the user selecting a
+        freeform range, which Textual handles at the screen level. We must not
+        clobber that selection here, so we detect it via the press offset and
+        bail out, only resetting the semantic ladder so the next v/click starts
+        small. This mirrors Textual's own click/drag test
+        (`screen.py`: `_mouse_down_offset == event.screen_offset`).
         """
+        if (
+            self._mouse_down_offset is None
+            or event.screen_offset != self._mouse_down_offset
+        ):
+            self._reset_selection_state()
+            return
         leaf = find_leaf_block(event.widget)
         if leaf is None:
             return
