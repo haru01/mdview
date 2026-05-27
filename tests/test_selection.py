@@ -168,6 +168,21 @@ def test_section_source_returns_only_that_sections_markdown() -> None:
     _run(driver)
 
 
+def test_section_line_range_slices_the_same_text_as_section_source() -> None:
+    """`section_line_range` indexes the source so slicing it equals `section_source`."""
+    from mdview.selection import section_line_range, section_source
+
+    async def driver(app, doc) -> None:
+        heading = _heading(doc, "リスト")
+        span = section_line_range(heading, doc)
+        assert span is not None
+        start, end = span
+        lines = doc.source.splitlines(keepends=True)
+        assert "".join(lines[start:end]) == section_source(heading, doc)
+
+    _run(driver)
+
+
 def test_section_source_last_section_runs_to_end_of_document() -> None:
     """The final `##` section extends to the end of the document."""
     from mdview.selection import section_source

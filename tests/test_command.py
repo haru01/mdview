@@ -11,9 +11,21 @@ def test_help_spellings() -> None:
     assert parse_command("help") == "help"
 
 
+def test_edit_loop_commands() -> None:
+    assert parse_command("w") == "write"
+    assert parse_command("write") == "write"
+    assert parse_command("q!") == "force_quit"
+    assert parse_command("wq") == "write_quit"
+    assert parse_command("x") == "write_quit"
+    assert parse_command("undo") == "undo"
+    assert parse_command("u") == "undo"
+
+
 def test_whitespace_and_case_are_ignored() -> None:
     assert parse_command("  Q  ") == "quit"
     assert parse_command("Help") == "help"
+    assert parse_command(" W ") == "write"
+    assert parse_command("Q!") == "force_quit"
 
 
 def test_empty_is_none() -> None:

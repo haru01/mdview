@@ -327,6 +327,66 @@ SectionInsightScreen {
     height: 1fr;
 }
 
+/* ===== AI edit diff-preview modal (the `claude -p` edit loop) ===== */
+
+DiffPreviewScreen {
+    align: center middle;
+    background: $surface 60%;
+}
+
+#diff-preview-dialog {
+    width: 85%;
+    height: 85%;
+    background: $panel;
+    border: round $orange;
+    padding: 1 2;
+}
+
+#diff-preview-body {
+    width: 1fr;
+    height: 1fr;
+}
+
+#diff-preview-help {
+    height: 1;
+    margin: 1 0 0 0;
+    color: $text-muted;
+}
+
+/* ===== AI edit instruction modal (entry of the edit loop) ===== */
+
+EditInstructionScreen {
+    align: center middle;
+    background: $surface 60%;
+}
+
+#edit-input-dialog {
+    width: 80%;
+    height: auto;
+    max-height: 80%;
+    background: $panel;
+    border: round $orange;
+    padding: 1 2;
+}
+
+#edit-input-context {
+    color: $text-muted;
+    border-bottom: solid $green 40%;
+    padding: 0 0 1 0;
+    margin: 0 0 1 0;
+}
+
+/* Clickable: opens SelectionViewScreen with the full scope. */
+#edit-input-context:hover {
+    background: $boost;
+    color: $text;
+}
+
+#edit-input-loading {
+    height: 1;
+    margin: 1 0 0 0;
+}
+
 #ask-ai-svg-toggle {
     margin: 1 0 0 0;
     border: none;
@@ -346,8 +406,8 @@ SectionInsightScreen {
 
 /* ===== Unified command line (`/` search, `:` command) =====
  * Docked at the bottom, hidden until `/` or `:` (action_search/action_command
- * flip `display`). less/vim-style: the leading `/` or `:` is editable text in
- * the field itself, with the match count/status flush right.
+ * flip `display`). less/vim-style: a fixed `/`/`:` prompt label sits left of an
+ * input that holds only the pattern/command, with the match count flush right.
  */
 
 #cmdline-bar {
@@ -355,6 +415,13 @@ SectionInsightScreen {
     height: 1;
     display: none;
     background: $panel;
+}
+
+#cmdline-prompt {
+    width: auto;
+    height: 1;
+    padding: 0 0 0 1;
+    color: $green;
 }
 
 #cmdline {

@@ -10,10 +10,20 @@ distinguishes by also checking whether the raw text was blank).
 from __future__ import annotations
 
 # Accepted spellings → canonical command. Mirrors less/vim: `:q`/`:quit` quit,
-# `:h`/`:help` open help.
+# `:h`/`:help` open help. The AI edit loop adds `:w` (write the buffer), `:q!`
+# (force quit, discarding unsaved edits), `:wq` (write then quit), and `:undo`
+# (revert the last applied edit).
 _COMMANDS = {
     "q": "quit",
     "quit": "quit",
+    "q!": "force_quit",
+    "quit!": "force_quit",
+    "w": "write",
+    "write": "write",
+    "wq": "write_quit",
+    "x": "write_quit",
+    "undo": "undo",
+    "u": "undo",
     "h": "help",
     "help": "help",
 }
