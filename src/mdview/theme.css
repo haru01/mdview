@@ -45,6 +45,13 @@ MarkdownH2 {
     border-bottom: heavy $orange 60%;
 }
 
+/* In a whole-diff document, a file heading and its hunks are one unit: drop the
+ * heading's bottom margin so the first `@@` hunk header hugs the file banner
+ * (set by app._inject_diff_hunks). */
+MarkdownH2.diff-file {
+    margin: 1 0 0 0;
+}
+
 MarkdownH3 {
     color: $orange;
     text-style: bold;
@@ -159,11 +166,45 @@ MarkdownTableContent > .cell.row10 {
 
 /* ===== Misc ===== */
 
+/* The viewer keeps a hidden MarkdownTableOfContents as the TOC data source
+ * (see app.action_open_toc); these sidebar dimensions only affect that
+ * never-shown widget. The visible TOC is the TocScreen modal below. */
 MarkdownTableOfContents {
     background: $panel;
     width: 30%;
     min-width: 20;
     max-width: 50;
+}
+
+/* ===== TOC popup modal =====
+ * `t` opens the table of contents as a wide centered modal instead of a docked
+ * sidebar, so long headings (e.g. a piped diff's file paths) stay readable.
+ */
+
+TocScreen {
+    align: center middle;
+    background: $surface 60%;
+}
+
+#toc-dialog {
+    width: 80%;
+    height: 80%;
+    background: $panel;
+    border: round $orange;
+    padding: 1 2;
+}
+
+/* Override the sidebar dimensions above so the TOC fills the wide dialog. */
+#toc-dialog MarkdownTableOfContents {
+    width: 1fr;
+    height: 1fr;
+    min-width: 0;
+    max-width: 100%;
+}
+
+#toc-dialog Tree {
+    width: 1fr;
+    height: 1fr;
 }
 
 .mdview-image {
