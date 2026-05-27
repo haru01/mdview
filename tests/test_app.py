@@ -1015,3 +1015,146 @@ def test_mouse_clicks_expand_then_reset_on_new_block() -> None:
             assert third.strip() == "mdview サンプル", third
 
     asyncio.run(driver())
+
+
+def test_t_opens_toc_popup_modal() -> None:
+    """Pressing `t` opens the TOC as a centered modal screen (not a sidebar)."""
+    import asyncio
+
+    from mdview.toc import TocScreen
+
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("t")
+            await pilot.pause()
+            assert isinstance(app.screen, TocScreen), "t should push the TOC modal"
+
+    asyncio.run(driver())
+
+
+def test_toc_popup_lists_document_headings() -> None:
+    """The TOC modal's tree is populated with the open document's headings."""
+    import asyncio
+
+    from textual.widgets import Tree
+
+    md = FIXTURES / "sample.md"
+
+    def walk(node):
+        for child in node.children:
+            yield child
+            yield from walk(child)
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("t")
+            await pilot.pause()
+            await pilot.pause()
+            tree = app.screen.query_one(Tree)
+            labels = " ".join(str(node.label) for node in walk(tree.root))
+            assert "見出しの階層" in labels, labels
+            assert "コードブロック" in labels, labels
+
+    asyncio.run(driver())
+
+
+def test_toc_popup_jump_scrolls_and_closes() -> None:
+    """Selecting a TOC node scrolls the document to it and closes the modal."""
+    import asyncio
+
+    from textual.widgets import MarkdownViewer, Tree
+
+    from mdview.toc import TocScreen
+
+    md = FIXTURES / "sample.md"
+
+    def walk(node):
+        for child in node.children:
+            yield child
+            yield from walk(child)
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            viewer = app.query_one(MarkdownViewer)
+            assert viewer.scroll_y == 0
+            await pilot.press("t")
+            await pilot.pause()
+            await pilot.pause()
+            tree = app.screen.query_one(Tree)
+            # "Mermaid" is the last heading, so jumping to it must scroll down.
+            target = next(n for n in walk(tree.root) if n.data and "Mermaid" in str(n.label))
+            tree.select_node(target)
+            await pilot.pause()
+            await pilot.pause()
+            assert not isinstance(app.screen, TocScreen), "selecting a node should close the modal"
+            assert viewer.scroll_y > 0, "selecting a node should scroll the document to it"
+
+    asyncio.run(driver())
+
+
+def test_toc_popup_escape_closes_without_quitting() -> None:
+    """Esc dismisses the TOC modal and returns to the document (does not quit)."""
+    import asyncio
+
+    from mdview.toc import TocScreen
+
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            for close_key in ("escape", "q", "t"):
+                await pilot.press("t")
+                await pilot.pause()
+                assert isinstance(app.screen, TocScreen), f"t should open the modal ({close_key})"
+                await pilot.press(close_key)
+                await pilot.pause()
+                assert not isinstance(app.screen, TocScreen), f"{close_key} should close the modal"
+                assert len(app.screen_stack) == 1, f"{close_key} should pop only the modal, not quit"
+
+    asyncio.run(driver())
+
+
+def test_toc_popup_jk_navigate_tree() -> None:
+    """The tree is focused on open and j/k move its cursor."""
+    import asyncio
+
+    from textual.widgets import Tree
+
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("t")
+            await pilot.pause()
+            await pilot.pause()
+            tree = app.screen.query_one(Tree)
+            assert tree.has_focus, "tree should be focused so arrows/j/k work immediately"
+            # cursor_line is clamped to [0, last]; from the initial -1, j lands on
+            # 0 then 1, and k steps back to 0.
+            await pilot.press("j")
+            await pilot.press("j")
+            await pilot.pause()
+            two_down = tree.cursor_line
+            assert two_down >= 1, two_down
+            await pilot.press("k")
+            await pilot.pause()
+            assert tree.cursor_line == two_down - 1, (two_down, tree.cursor_line)
+
+    asyncio.run(driver())

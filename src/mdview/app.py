@@ -10,11 +10,10 @@ from pygments.token import Generic
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.css.query import NoMatches
 from textual.highlight import HighlightTheme, highlight
 from textual.selection import SELECT_ALL, Selection
 from textual.widget import Widget
-from textual.widgets import Markdown, MarkdownViewer, Tree
+from textual.widgets import Markdown, MarkdownViewer
 from textual.widgets._markdown import (
     MarkdownFence,
     MarkdownHeader,
@@ -29,6 +28,7 @@ from mdview.image_zoom import ZoomableImage
 from mdview.mermaid import MermaidRenderError, find_mmdc, render_mermaid
 from mdview.selection import ATOMIC_BLOCKS, build_scopes, find_leaf_block
 from mdview.svg import SvgRenderError, rasterize_svg
+from mdview.toc import TocScreen
 
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
@@ -121,7 +121,7 @@ class MdViewerApp(App):
         Binding("G", "scroll_end", "Bottom", show=False),
         Binding("n", "next_heading", "Next heading", show=True),
         Binding("p", "prev_heading", "Prev heading", show=True),
-        Binding("t", "toggle_toc", "TOC", show=True),
+        Binding("t", "open_toc", "TOC", show=True),
         Binding("b,left", "go_back", "Back", show=True),
         Binding("v", "expand_selection", "Expand sel", show=True),
         Binding("V", "shrink_selection", "Shrink sel", show=False),
@@ -371,25 +371,17 @@ class MdViewerApp(App):
             )
         )
 
-    def action_toggle_toc(self) -> None:
+    def action_open_toc(self) -> None:
+        # The TOC opens as a wide centered modal (TocScreen) rather than the
+        # docked sidebar, which truncated long headings (e.g. a diff's file
+        # paths). The viewer keeps a hidden MarkdownTableOfContents purely as the
+        # data source that Textual populates on load; we hand its data to the
+        # modal.
         viewer = self.query_one(MarkdownViewer)
-        viewer.show_table_of_contents = not viewer.show_table_of_contents
-        if viewer.show_table_of_contents:
-            # Focus the TOC's inner Tree so j/k/↑/↓ navigate it immediately.
-            # call_after_refresh: the TOC widget mounts on the next layout pass.
-            self.call_after_refresh(self._focus_toc)
-        else:
-            viewer.document.focus()
-
-    def _focus_toc(self) -> None:
-        try:
-            toc = self.query_one(MarkdownTableOfContents)
-        except NoMatches:
+        toc_data = viewer.query_one(MarkdownTableOfContents).table_of_contents
+        if not toc_data:
             return
-        try:
-            toc.query_one(Tree).focus()
-        except NoMatches:
-            return
+        self.push_screen(TocScreen(viewer, toc_data))
 
     def action_next_heading(self) -> None:
         self._jump_heading(direction=1)
