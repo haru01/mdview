@@ -371,10 +371,61 @@ def test_ask_ai_opens_modal_with_selection(tmp_path: Path, monkeypatch: pytest.M
             await pilot.pause()
             assert isinstance(app.screen, AskAiScreen), "selection should open the modal"
 
-            from textual.widgets import Input
+            from textual.widgets import Checkbox, Input
 
             input_widget = app.screen.query_one("#ask-ai-input", Input)
-            assert input_widget.value == "SVG図解で解説して", "input should pre-fill a default question"
+            assert input_widget.value == "わかりやすく解説して", (
+                "input should pre-fill a plain (non-SVG) default question"
+            )
+
+            # SVG diagramming is opt-in: the toggle starts unchecked.
+            toggle = app.screen.query_one("#ask-ai-svg-toggle", Checkbox)
+            assert toggle.value is False, "SVG mode should be off by default"
+
+            # The popup is enlarged for research-style reading.
+            dialog = app.screen.query_one("#ask-ai-dialog")
+            assert dialog.styles.width.value == 90
+            assert dialog.styles.height.value == 90
+
+    asyncio.run(driver())
+
+
+def test_ask_ai_toggling_svg_refocuses_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Toggling the SVG checkbox returns focus to the input, so Enter still sends
+    the question instead of just flipping the checkbox again."""
+    import asyncio
+
+    from textual.widgets import Checkbox, Input
+
+    from mdview.ask_ai import AskAiScreen
+
+    _claude_on_path(tmp_path, monkeypatch, stdout="ok")
+
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            app.screen.text_select_all()
+            await pilot.pause()
+            await pilot.press("a")
+            await pilot.pause()
+            assert isinstance(app.screen, AskAiScreen)
+
+            checkbox = app.screen.query_one("#ask-ai-svg-toggle", Checkbox)
+            checkbox.focus()
+            await pilot.pause()
+            assert app.screen.focused is checkbox
+            checkbox.toggle()
+            await pilot.pause()
+            assert checkbox.value is True
+            assert app.screen.focused is app.screen.query_one("#ask-ai-input", Input), (
+                "toggling SVG mode should hand focus back to the input"
+            )
 
     asyncio.run(driver())
 
@@ -413,6 +464,8 @@ def test_ask_ai_renders_svg_answer_as_image(
     md = FIXTURES / "sample.md"
 
     async def driver() -> None:
+        from textual.widgets import Checkbox
+
         app = MdViewerApp(md)
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
@@ -423,6 +476,9 @@ def test_ask_ai_renders_svg_answer_as_image(
             await pilot.pause()
             assert isinstance(app.screen, AskAiScreen)
 
+            # Opt into SVG diagramming before asking.
+            app.screen.query_one("#ask-ai-svg-toggle", Checkbox).value = True
+            await pilot.pause()
             await pilot.press("enter")
             images: list[Image] = []
             for _ in range(40):
@@ -477,6 +533,51 @@ def test_ask_ai_plain_answer_renders_no_image(
             for _ in range(5):
                 await pilot.pause()
             assert not list(app.screen.query(Image)), "plain text answer needs no Image"
+
+    asyncio.run(driver())
+
+
+def test_ask_ai_svg_toggle_off_does_not_render_svg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the SVG toggle off (the default), an SVG in the answer is left as
+    plain text — no image is rendered."""
+    import asyncio
+
+    from textual_image.widget import Image
+
+    from mdview.ask_ai import AskAiScreen
+
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="40">'
+        '<rect width="100" height="40" fill="#4ebf71"/></svg>'
+    )
+    _claude_on_path(tmp_path, monkeypatch, stdout=f"説明です。\n\n{svg}\n\n以上。")
+
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            app.screen.text_select_all()
+            await pilot.pause()
+            await pilot.press("a")
+            await pilot.pause()
+            assert isinstance(app.screen, AskAiScreen)
+
+            # Leave the toggle off (default) and submit.
+            await pilot.press("enter")
+            cwd_log = tmp_path / "cwd.log"
+            for _ in range(40):
+                await pilot.pause()
+                if cwd_log.exists():
+                    break
+            assert cwd_log.exists(), "claude should have been invoked"
+            for _ in range(5):
+                await pilot.pause()
+            assert not list(app.screen.query(Image)), "SVG must not render while the toggle is off"
 
     asyncio.run(driver())
 
@@ -540,6 +641,10 @@ def test_ask_ai_renders_svg_saved_to_temp_dir(
             # Point the fake CLI at the exact dir the popup will scan.
             monkeypatch.setenv("MDVIEW_TEST_SVG_DIR", str(app.screen._svg_out_dir))
 
+            from textual.widgets import Checkbox
+
+            app.screen.query_one("#ask-ai-svg-toggle", Checkbox).value = True
+            await pilot.pause()
             await pilot.press("enter")
             images: list[Image] = []
             for _ in range(40):
@@ -550,6 +655,70 @@ def test_ask_ai_renders_svg_saved_to_temp_dir(
             assert images, "an SVG saved to the temp dir should render as an Image"
             answer_area = app.screen.query_one("#ask-ai-answer")
             assert list(answer_area.query(Image)), "the diagram should render inside the popup"
+
+    asyncio.run(driver())
+
+
+def test_clicking_popup_svg_opens_zoom_screen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rendered SVG in the popup is clickable; a click opens a full-screen zoom."""
+    import asyncio
+
+    from mdview.ask_ai import AskAiScreen
+    from mdview.image_zoom import ImageZoomScreen, ZoomableImage
+
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="40">'
+        '<rect width="100" height="40" fill="#4ebf71"/></svg>'
+    )
+    _claude_on_path(tmp_path, monkeypatch, stdout=f"図解です。\n\n{svg}\n\n以上。")
+
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            app.screen.text_select_all()
+            await pilot.pause()
+            await pilot.press("a")
+            await pilot.pause()
+            assert isinstance(app.screen, AskAiScreen)
+
+            from textual.widgets import Checkbox
+
+            app.screen.query_one("#ask-ai-svg-toggle", Checkbox).value = True
+            await pilot.pause()
+            await pilot.press("enter")
+            for _ in range(40):
+                await pilot.pause()
+                if app.screen.query(ZoomableImage):
+                    break
+            assert app.screen.query(ZoomableImage), "popup SVG should render as a ZoomableImage"
+
+            await pilot.click(ZoomableImage)
+            await pilot.pause()
+            assert isinstance(app.screen, ImageZoomScreen), "clicking the SVG should open the zoom screen"
+
+    asyncio.run(driver())
+
+
+def test_document_svg_renders_as_zoomable_image() -> None:
+    """An SVG referenced in the document renders as a clickable ZoomableImage."""
+    import asyncio
+
+    from mdview.image_zoom import ZoomableImage
+
+    md = FIXTURES / "sample.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            assert app.query(ZoomableImage), "sample.svg should render as a ZoomableImage"
 
     asyncio.run(driver())
 

@@ -175,10 +175,9 @@ AskAiScreen {
 }
 
 #ask-ai-dialog {
-    width: 80%;
-    max-width: 100;
-    height: auto;
-    max-height: 80%;
+    /* Roomy, research-style reading area — fills most of the screen. */
+    width: 90%;
+    height: 90%;
     background: $panel;
     border: round $orange;
     padding: 1 2;
@@ -191,13 +190,43 @@ AskAiScreen {
     margin: 0 0 1 0;
 }
 
+#ask-ai-svg-toggle {
+    margin: 1 0 0 0;
+    border: none;
+    background: transparent;
+}
+
 #ask-ai-loading {
     height: 1;
     margin: 1 0;
 }
 
 #ask-ai-answer {
-    height: auto;
-    max-height: 24;
+    /* Grow to fill the rest of the (now tall) dialog. */
+    height: 1fr;
     margin: 1 0 0 0;
+}
+
+/* ===== Image zoom overlay =====
+ * Click a rendered SVG/diagram to blow it up to (almost) the full screen over a
+ * dimmed backdrop; click anywhere or press Esc/q to close.
+ */
+
+ImageZoomScreen {
+    align: center middle;
+    background: $surface 90%;
+}
+
+#zoom-dialog {
+    width: 100%;
+    height: 100%;
+    align: center middle;
+    padding: 1 2;
+}
+
+#zoom-image {
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    max-height: 100%;
 }

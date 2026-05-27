@@ -33,13 +33,13 @@ def build_prompt(
         "このドキュメントの内容を文脈として、簡潔に日本語で質問に答えてください。\n\n"
     )
     if svg_out_dir is not None:
-        # The viewer renders SVGs inside the answer popup, so steer Claude to
-        # save any diagram into our temp dir (absolute path) instead of writing
-        # into the repository, and to keep the prose answer short.
+        # SVG mode (opt-in): ask for a diagram and steer Claude to save it into
+        # our temp dir (absolute path) — which the popup renders — instead of
+        # writing into the repository, keeping the prose answer short.
         prompt += (
-            "図解する場合は、自己完結した1つの `<svg>` を次の絶対パスのディレクトリ配下にのみ "
-            f"`.svg` 拡張子で保存してください（リポジトリ内には書き込まないこと）: {svg_out_dir}\n"
-            "保存先パスはユーザーに伝えなくてよく、本文の説明は簡潔にしてください。\n\n"
+            "回答内容を表すSVG図を作成して解説してください。自己完結した1つの `<svg>` を、"
+            f"次の絶対パスのディレクトリ配下にのみ `.svg` 拡張子で保存してください（リポジトリ内には書き込まないこと）: {svg_out_dir}\n"
+            "保存先パスはユーザーに伝える必要はなく、本文の説明は簡潔にしてください。\n\n"
         )
     return prompt + (
         f"# ドキュメント全文\n{document}\n\n"

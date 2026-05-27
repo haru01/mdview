@@ -22,6 +22,7 @@ from textual_image.widget import Image
 
 from mdview.ai import find_claude
 from mdview.ask_ai import AskAiScreen
+from mdview.image_zoom import ZoomableImage
 from mdview.mermaid import MermaidRenderError, find_mmdc, render_mermaid
 from mdview.svg import SvgRenderError, rasterize_svg
 
@@ -190,7 +191,7 @@ class MdViewerApp(App):
             return None
         return candidate
 
-    def _build_image_widget(self, image_path: Path) -> Image | None:
+    def _build_image_widget(self, image_path: Path) -> Image | ZoomableImage | None:
         suffix = image_path.suffix.lower()
         if suffix == ".svg":
             # Disambiguate two SVGs with the same basename in different dirs
@@ -199,7 +200,8 @@ class MdViewerApp(App):
             png_path = Path(self._tempdir.name) / f"{image_path.stem}-{key}.png"
             target_width_px = max(400, (self.size.width or 80) * 16)
             rasterize_svg(image_path, png_path, width_px=target_width_px)
-            return Image(png_path, classes="mdview-image")
+            # Zoomable: click an SVG diagram to view it full-screen.
+            return ZoomableImage(png_path)
         if suffix in _IMAGE_EXTS:
             return Image(image_path, classes="mdview-image")
         return None

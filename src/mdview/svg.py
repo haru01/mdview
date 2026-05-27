@@ -28,6 +28,35 @@ def extract_svgs(text: str) -> tuple[list[str], str]:
     remaining = re.sub(r"\n{3,}", "\n\n", remaining).strip()
     return svgs, remaining
 
+
+# Matches the opening `<svg ...>` tag (attributes may span lines; `[^>]` covers
+# newlines). Used to splice a stylesheet in right after it.
+_SVG_OPEN_RE = re.compile(r"<svg\b[^>]*>", re.IGNORECASE)
+# A CJK-capable font stack: Hiragino on macOS, Noto on Linux, with sans-serif as
+# the last resort. The first installed family wins.
+_CJK_FONT_STACK = (
+    '"Hiragino Sans", "Hiragino Kaku Gothic ProN", "Arial Unicode MS", '
+    '"BIZ UDGothic", "Noto Sans CJK JP", "Noto Sans JP", sans-serif'
+)
+_CJK_FONT_STYLE = f"<style>text,tspan{{font-family:{_CJK_FONT_STACK} !important;}}</style>"
+
+
+def apply_cjk_font(svg: str) -> str:
+    """Force a CJK-capable font on every text element of an SVG.
+
+    cairo's toy font API picks a single face per text run and does no per-glyph
+    fallback, so an SVG whose ``font-family`` lacks Japanese glyphs renders
+    Japanese as tofu (□). We splice an override stylesheet in right after the
+    opening ``<svg>`` tag; ``!important`` lets it beat each element's own
+    ``font-family``. Returns the input unchanged if it has no usable ``<svg>``
+    tag (e.g. a self-closing root with no text to style).
+    """
+    match = _SVG_OPEN_RE.search(svg)
+    if match is None or match.group().rstrip().endswith("/>"):
+        return svg
+    end = match.end()
+    return svg[:end] + _CJK_FONT_STYLE + svg[end:]
+
 _MAC_LIB_DIRS = (
     "/opt/homebrew/lib",  # macOS Apple Silicon
     "/usr/local/lib",  # macOS Intel
@@ -62,7 +91,15 @@ def rasterize_svg(src: Path, dst: Path, *, width_px: int) -> Path:
         raise SvgRenderError(f"cairosvg unavailable: {e}") from e
 
     try:
+        markup = apply_cjk_font(src.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError) as e:
+        raise SvgRenderError(f"failed to read {src}: {e}") from e
+
+    try:
+        # bytestring carries the CJK-patched markup; url keeps the file's
+        # directory as the base for any relative references inside the SVG.
         cairosvg.svg2png(
+            bytestring=markup.encode("utf-8"),
             url=str(src),
             write_to=str(dst),
             output_width=width_px,

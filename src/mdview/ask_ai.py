@@ -9,10 +9,10 @@ from textual import work
 from textual.app import ComposeResult
 from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Input, LoadingIndicator, Markdown, Static
-from textual_image.widget import Image
+from textual.widgets import Checkbox, Input, LoadingIndicator, Markdown, Static
 
 from mdview.ai import AiQueryError, ask_claude
+from mdview.image_zoom import ZoomableImage
 from mdview.svg import SvgRenderError, extract_svgs, rasterize_svg
 
 
@@ -37,10 +37,11 @@ class AskAiScreen(ModalScreen):
         with Vertical(id="ask-ai-dialog"):
             yield Static(self._selection_preview(), id="ask-ai-context")
             yield Input(
-                value="SVG図解で解説して",
+                value="わかりやすく解説して",
                 placeholder="この抜粋について質問… (Enterで送信, Escで閉じる)",
                 id="ask-ai-input",
             )
+            yield Checkbox("SVGで図解する", value=False, id="ask-ai-svg-toggle")
             loading = LoadingIndicator(id="ask-ai-loading")
             loading.display = False
             yield loading
@@ -59,6 +60,11 @@ class AskAiScreen(ModalScreen):
     def action_dismiss(self) -> None:
         self.dismiss()
 
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        # Hand focus back to the input so Enter sends the question rather than
+        # toggling the checkbox again.
+        self.query_one("#ask-ai-input", Input).focus()
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         question = event.value.strip()
         if not question:
@@ -70,11 +76,17 @@ class AskAiScreen(ModalScreen):
         input_widget = self.query_one("#ask-ai-input", Input)
         loading = self.query_one("#ask-ai-loading", LoadingIndicator)
         answer = self.query_one("#ask-ai-answer-md", Markdown)
+        # SVG diagramming is opt-in via the checkbox; otherwise the answer is
+        # plain text and we neither ask Claude for an SVG nor render one.
+        svg_mode = self.query_one("#ask-ai-svg-toggle", Checkbox).value
         input_widget.disabled = True
         loading.display = True
         await answer.update("")
         await self._clear_images()
-        self._reset_svg_out_dir()
+        svg_out_dir = None
+        if svg_mode:
+            self._reset_svg_out_dir()
+            svg_out_dir = self._svg_out_dir
         try:
             result = await ask_claude(
                 self._selection,
@@ -82,20 +94,23 @@ class AskAiScreen(ModalScreen):
                 self._document,
                 claude=self._claude,
                 cwd=self._cwd,
-                svg_out_dir=self._svg_out_dir,
+                svg_out_dir=svg_out_dir,
             )
         except AiQueryError as e:
             await answer.update(f"**エラー:** {e}")
         else:
-            # Two sources, both rendered: SVGs Claude saved as files in our temp
-            # dir (the common case — `claude -p` writes to disk), and any SVG it
-            # inlined into stdout (fallback). Prose is whatever stdout has left.
-            inline_svgs, prose = extract_svgs(result)
-            svgs = self._read_saved_svgs() + inline_svgs
-            rendered = await self._render_svgs(svgs)
-            # When a diagram rendered, show the prose beside it; otherwise fall
-            # back to the raw answer so the SVG source isn't silently dropped.
-            await answer.update(prose if rendered else result)
+            if not svg_mode:
+                await answer.update(result)
+            else:
+                # Two sources, both rendered: SVGs Claude saved as files in our
+                # temp dir (the common case — `claude -p` writes to disk), and
+                # any SVG inlined into stdout (fallback). Prose is what's left.
+                inline_svgs, prose = extract_svgs(result)
+                svgs = self._read_saved_svgs() + inline_svgs
+                rendered = await self._render_svgs(svgs)
+                # With a diagram shown, display the prose beside it; otherwise
+                # fall back to the raw answer so the SVG source isn't dropped.
+                await answer.update(prose if rendered else result)
         finally:
             loading.display = False
             input_widget.disabled = False
@@ -135,7 +150,7 @@ class AskAiScreen(ModalScreen):
                 rendered += 1
         return rendered
 
-    def _svg_to_image(self, svg: str) -> Image | None:
+    def _svg_to_image(self, svg: str) -> ZoomableImage | None:
         # Persist the SVG (and its PNG) under the app's temp dir, keyed by a hash
         # of the markup so identical diagrams reuse the same files.
         digest = hashlib.sha1(svg.encode("utf-8")).hexdigest()[:12]
@@ -147,8 +162,8 @@ class AskAiScreen(ModalScreen):
             rasterize_svg(svg_path, png_path, width_px=target_width_px)
         except SvgRenderError:
             return None
-        return Image(png_path, classes="mdview-image")
+        return ZoomableImage(png_path)
 
     async def _clear_images(self) -> None:
-        for image in list(self.query(Image)):
+        for image in list(self.query(ZoomableImage)):
             await image.remove()
