@@ -1282,3 +1282,211 @@ def test_toc_popup_jk_navigate_tree() -> None:
             assert tree.cursor_line == two_down - 1, (two_down, tree.cursor_line)
 
     asyncio.run(driver())
+
+
+# --- `/` keyword search ------------------------------------------------------
+
+_MULTI_FILE_DIFF = "".join(
+    f"diff --git a/file{f}.txt b/file{f}.txt\n"
+    f"--- a/file{f}.txt\n+++ b/file{f}.txt\n"
+    "@@ -1,20 +1,20 @@\n"
+    + "".join(f" ctx {f}-{k}\n" for k in range(20))
+    + f"-old{f}\n+new{f}\n"
+    for f in range(3)
+)
+
+
+async def _submit_search(pilot, query: str) -> None:
+    """Open the `/` bar, type *query*, and submit it."""
+    from textual.widgets import Input
+
+    await pilot.press("slash")
+    await pilot.pause()
+    pilot.app.query_one("#search-input", Input).value = query
+    await pilot.press("enter")
+    await pilot.pause()
+
+
+def test_search_double_at_matches_only_hunks() -> None:
+    """`/@@` filters to the diff's hunks (file headings have a single `@`)."""
+    import asyncio
+
+    from textual.widgets import MarkdownViewer
+
+    from mdview.diff_widget import DiffHunk
+
+    async def driver() -> None:
+        app = _diff_app(_MULTI_FILE_DIFF)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            viewer = app.query_one(MarkdownViewer)
+            start = viewer.scroll_y
+            await _submit_search(pilot, "@@")
+            assert app._search_matches, "expected matches for @@"
+            assert all(isinstance(w, DiffHunk) for w in app._search_matches)
+            assert len(app._search_matches) == 3
+            assert viewer.scroll_y > start, "should jump to the first hunk match"
+            # the bar stays visible as a status line while a search is active
+            assert app.query_one("#search-bar").display is True
+            # exactly one block is marked the "current" one
+            current = list(viewer.document.query(".search-current"))
+            assert len(current) == 1
+            assert current[0] is app._search_hits[app._search_index][0]
+
+    asyncio.run(driver())
+
+
+def test_search_current_marker_moves_with_n() -> None:
+    """The distinct `.search-current` highlight follows `n`/`p`."""
+    import asyncio
+
+    from textual.widgets import MarkdownViewer
+
+    async def driver() -> None:
+        app = _diff_app(_MULTI_FILE_DIFF)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            viewer = app.query_one(MarkdownViewer)
+            await _submit_search(pilot, "old")  # one hit per hunk → distinct blocks
+            first = app._search_index
+            assert len(list(viewer.document.query(".search-current"))) == 1
+            await pilot.press("n")
+            await pilot.pause()
+            assert app._search_index != first
+            current = list(viewer.document.query(".search-current"))
+            assert len(current) == 1, "still exactly one current block"
+            assert current[0] is app._search_hits[app._search_index][0]
+
+    asyncio.run(driver())
+
+
+def test_search_steps_through_each_occurrence_in_one_block() -> None:
+    """`n` advances one hit at a time, even for two matches in the same block."""
+    import asyncio
+
+    md = "# Doc\n\nfoo and foo again\n"
+
+    async def driver() -> None:
+        app = MdViewerApp(content=md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            await _submit_search(pilot, "foo")
+            assert len(app._search_hits) == 2, "two occurrences in one paragraph"
+            assert app._search_hits[0][0] is app._search_hits[1][0], "same block"
+            assert app._search_hits[0][1:] != app._search_hits[1][1:], "different spans"
+            first = app._search_index
+            await pilot.press("n")
+            await pilot.pause()
+            assert app._search_index != first, "`n` steps to the 2nd occurrence"
+
+    asyncio.run(driver())
+
+
+def test_search_anchored_at_matches_only_file_headings() -> None:
+    """`/^@ ` filters to the `@ `-prefixed file headings, not the `@@` hunks."""
+    import asyncio
+
+    from textual.widgets._markdown import MarkdownHeader
+
+    async def driver() -> None:
+        app = _diff_app(_MULTI_FILE_DIFF)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            await _submit_search(pilot, "^@ ")
+            assert len(app._search_matches) == 3
+            assert all(isinstance(w, MarkdownHeader) for w in app._search_matches)
+
+    asyncio.run(driver())
+
+
+def test_search_then_n_p_walk_matches() -> None:
+    """While a search is active, `n`/`p` step through the matches."""
+    import asyncio
+
+    from textual.widgets import MarkdownViewer
+
+    async def driver() -> None:
+        app = _diff_app(_MULTI_FILE_DIFF)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            viewer = app.query_one(MarkdownViewer)
+            await _submit_search(pilot, "old")  # one hit per hunk, in separate files
+            after_search = viewer.scroll_y
+            await pilot.press("n")
+            await pilot.pause()
+            assert viewer.scroll_y > after_search, "`n` should advance to the next match"
+            forward = viewer.scroll_y
+            await pilot.press("p")
+            await pilot.pause()
+            assert viewer.scroll_y < forward, "`p` should step back to the previous match"
+
+    asyncio.run(driver())
+
+
+def test_empty_search_clears_matches() -> None:
+    """Submitting an empty query clears the filter; `n`/`p` revert to headings."""
+    import asyncio
+
+    async def driver() -> None:
+        app = _diff_app(_MULTI_FILE_DIFF)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            await _submit_search(pilot, "old")
+            assert app._search_hits
+            await _submit_search(pilot, "")
+            assert app._search_hits == []
+            assert app._search_matches == []
+            # clearing the search hides the status bar again
+            assert app.query_one("#search-bar").display is False
+
+    asyncio.run(driver())
+
+
+def test_search_no_match_keeps_empty_matches() -> None:
+    """A query with no hits leaves nothing to navigate (no stale matches)."""
+    import asyncio
+
+    async def driver() -> None:
+        app = _diff_app(_MULTI_FILE_DIFF)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            await _submit_search(pilot, "zzz-no-such-text")
+            assert app._search_hits == []
+            assert app._search_matches == []
+
+    asyncio.run(driver())
+
+
+def test_search_colours_only_the_matched_substring() -> None:
+    """Highlighting is per-word: only the matched span is washed, not the block."""
+    import asyncio
+
+    from textual.widgets._markdown import MarkdownParagraph
+
+    md = "# Doc\n\nalpha import beta gamma\n"
+
+    async def driver() -> None:
+        app = MdViewerApp(content=md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            await _submit_search(pilot, "import")
+            para = next(
+                w for w in app._search_matches if isinstance(w, MarkdownParagraph)
+            )
+            text = para._content.plain
+            start = text.index("import")
+            end = start + len("import")
+            spans = para._content._spans
+            # a highlight span covers exactly "import" — not the whole paragraph
+            assert any(s.start == start and s.end == end for s in spans), spans
+            assert not any(s.start == 0 and s.end == len(text) for s in spans), spans
+
+    asyncio.run(driver())

@@ -8,11 +8,12 @@ model (`parse_diff` → `list[FileDiff]`). Two consumers render that model:
   delta-styled `DiffHunk` widget (see `mdview.diff_widget` / `mdview.diffview`);
 - the non-TTY path renders the model directly with Rich.
 
-`diff_to_markdown` keeps each file as a `##` heading (so the TOC lists changed
-files and `n`/`p` jump between them) but, unlike before, does **not** turn `@@`
-hunk headers into `###` headings — the hunk body simply lives in a ```diff
-fence that the TUI replaces. The transform is purely deterministic: same input
-always yields the same output.
+`diff_to_markdown` keeps each file as a `## @ ` heading (so the TOC lists changed
+files and `n`/`p` jump between them; the `@ ` prefix is the `/` search hook —
+see `mdview.app`) but, unlike before, does **not** turn `@@` hunk headers into
+`###` headings — the hunk body simply lives in a ```diff fence that the TUI
+replaces. The transform is purely deterministic: same input always yields the
+same output.
 """
 
 from __future__ import annotations
@@ -258,10 +259,14 @@ def diff_to_markdown(files: list[FileDiff]) -> str:
     Each file becomes a `##` heading; each hunk becomes a single ```diff fence
     holding its raw text. The fence is a placeholder the TUI swaps for a
     delta-styled widget — and a readable fallback if it does not.
+
+    The file heading is prefixed with `@ ` so the `/` search has a stable hook:
+    its rendered text starts with `@ ` while a hunk header starts with `@@ `,
+    so `^@ ` jumps between files and `@@` between hunks (see mdview.search).
     """
     blocks: list[str] = []
     for file in files:
-        blocks.append(f"## {_escape_md(file.path)}{_STATUS_SUFFIX.get(file.status, '')}")
+        blocks.append(f"## @ {_escape_md(file.path)}{_STATUS_SUFFIX.get(file.status, '')}")
         if file.binary_note:
             blocks.append(_escape_md(file.binary_note))
         for hunk in file.hunks:

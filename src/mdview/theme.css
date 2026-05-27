@@ -254,6 +254,38 @@ AskAiScreen {
     margin: 1 0 0 0;
 }
 
+/* ===== `/` search bar =====
+ * Docked at the bottom, hidden until `/` (app.action_search flips `display`).
+ * The input grows; the match count sits at the right.
+ */
+
+#search-bar {
+    dock: bottom;
+    height: 1;
+    display: none;
+    background: $panel;
+}
+
+#search-input {
+    width: 1fr;
+    height: 1;
+    border: none;
+    background: $panel;
+    padding: 0 1;
+}
+
+#search-count {
+    width: auto;
+    height: 1;
+    padding: 0 1;
+    color: $text-muted;
+}
+
+/* Match highlighting is per-word: app._highlight_block washes just the matched
+ * substrings inside each block (subtle green for the set, brighter for the
+ * current match), so there is no whole-block CSS rule. `.search-current` stays
+ * as a no-style marker class for the block n/p last landed on. */
+
 /* ===== Image zoom overlay =====
  * Click a rendered SVG/diagram to blow it up to (almost) the full screen over a
  * dimmed backdrop; click anywhere or press Esc/q to close.

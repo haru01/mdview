@@ -166,7 +166,8 @@ def test_parse_diff_form_feed_in_body_survives() -> None:
 
 def test_diff_to_markdown_keeps_file_heading_drops_hunk_heading() -> None:
     out = diff_to_markdown(parse_diff(_BASIC))
-    assert "## src/app.py" in out
+    # `@ ` prefix is the `/` search hook (see diff_to_markdown / mdview.search)
+    assert "## @ src/app.py" in out
     # @@ is NOT promoted to a heading any more
     assert "### " not in out
     # the hunk body lives in a diff fence (the placeholder the TUI swaps out)
@@ -183,7 +184,7 @@ def test_diff_to_markdown_status_suffixes() -> None:
         "diff --git a/new.txt b/new.txt\nnew file mode 100644\n"
         "--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+x\n"
     )
-    assert "## new.txt (new file)" in diff_to_markdown(parse_diff(new_diff))
+    assert "## @ new.txt (new file)" in diff_to_markdown(parse_diff(new_diff))
 
 
 def test_diff_to_markdown_fence_length_escapes_embedded_backticks() -> None:

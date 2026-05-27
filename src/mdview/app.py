@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import tempfile
 from pathlib import Path
 from urllib.parse import unquote
@@ -9,10 +10,12 @@ from markdown_it.token import Token
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.containers import Horizontal
 from textual.selection import SELECT_ALL, Selection
 from textual.widget import Widget
-from textual.widgets import Markdown, MarkdownViewer
+from textual.widgets import Input, Label, Markdown, MarkdownViewer, Static
 from textual.widgets._markdown import (
+    MarkdownBlock,
     MarkdownFence,
     MarkdownHeader,
     MarkdownParagraph,
@@ -24,8 +27,10 @@ from mdview.ai import find_claude
 from mdview.ask_ai import AskAiScreen
 from mdview.diff import FileDiff, parse_hunk_lines
 from mdview.diff_widget import DiffHunk
+from mdview.diffview import render_hunk
 from mdview.image_zoom import ZoomableImage
 from mdview.mermaid import MermaidRenderError, find_mmdc, render_mermaid
+from mdview.search import compile_query
 from mdview.selection import ATOMIC_BLOCKS, build_scopes, find_leaf_block
 from mdview.svg import SvgRenderError, rasterize_svg
 from mdview.toc import TocScreen
@@ -33,6 +38,13 @@ from mdview.toc import TocScreen
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 _MARKDOWN_EXTS = {".md", ".markdown", ".mdown", ".mkd"}
+
+# `/` search: colour applied to the matched substrings themselves (per-word, not
+# the whole block). The set gets a muted green wash; the current match (where
+# n/p landed) a brighter, bold one. These strings parse for both Textual
+# `Content.highlight_regex` and Rich `Text.highlight_regex` (the DiffHunk path).
+_MATCH_HL = "on #335c46"
+_CURRENT_HL = "bold on #4ebf71"
 
 
 class _MdViewer(MarkdownViewer):
@@ -50,6 +62,20 @@ class _MdViewer(MarkdownViewer):
         message.prevent_default()
 
 
+class _SearchInput(Input):
+    """The `/` search box. Esc closes it instead of quitting the app.
+
+    The App binds Esc to quit, and a plain Input doesn't handle Esc, so without
+    this the key would bubble up and exit. Binding it here — on the focused
+    widget — intercepts it first and just hides the bar.
+    """
+
+    BINDINGS = [Binding("escape", "cancel_search", "Cancel", show=False)]
+
+    def action_cancel_search(self) -> None:
+        self.app._cancel_search_edit()  # type: ignore[attr-defined]
+
+
 class MdViewerApp(App):
     CSS_PATH = "theme.css"
 
@@ -62,8 +88,9 @@ class MdViewerApp(App):
         Binding("ctrl+u", "scroll_half_up", "Half page up", show=False),
         Binding("g", "scroll_home", "Top", show=False),
         Binding("G", "scroll_end", "Bottom", show=False),
-        Binding("n", "next_heading", "Next file", show=True),
-        Binding("p", "prev_heading", "Prev file", show=True),
+        Binding("slash", "search", "Search", show=True),
+        Binding("n", "next_heading", "Next", show=True),
+        Binding("p", "prev_heading", "Prev", show=True),
         Binding("s", "next_hunk", "Next hunk", show=True),
         Binding("S", "prev_hunk", "Prev hunk", show=False),
         Binding("t", "open_toc", "TOC", show=True),
@@ -95,6 +122,25 @@ class MdViewerApp(App):
         self._sel_anchor: Widget | None = None
         self._sel_scopes: list[list[Widget]] | None = None
         self._sel_index: int = 0
+        # `/` search state. `_search_query` is the last submitted pattern (so the
+        # bar reopens prefilled); `_search_matches` is the matched blocks in
+        # document order — when non-empty, `n`/`p` walk these instead of headings.
+        # `_search_index` is the current match (highlighted distinctly so a jump
+        # is visible even when the match is already on-screen).
+        self._search_query: str = ""
+        # `_search_hits` is one entry per matched substring (block, offset span,
+        # and the line index of the match within the block so n/p can scroll to
+        # the exact line, not just the block top); `n`/`p` step through it one
+        # occurrence at a time, with `_search_index` the current one.
+        # `_search_matches` is the de-duped blocks that hold a hit (used to restore
+        # whole blocks when clearing).
+        self._search_hits: list[tuple[Widget, int, int, int]] = []
+        self._search_matches: list[Widget] = []
+        self._search_index: int = 0
+        # The compiled pattern (for re-highlighting on n/p) and the per-block
+        # originals captured before washing, so highlights can be undone cleanly.
+        self._search_pattern: re.Pattern[str] | None = None
+        self._search_originals: dict[Widget, object] = {}
         # TemporaryDirectory has its own finalizer that runs at interpreter
         # shutdown; no atexit.register needed. Registering here would pin the
         # cleanup callback for the whole process even if .run() never fires,
@@ -118,6 +164,14 @@ class MdViewerApp(App):
         # open_links=False so we route anchors (#section) to goto_anchor
         # ourselves instead of letting Textual hand them to the OS browser.
         yield _MdViewer(show_table_of_contents=False, open_links=False)
+        # The `/` search bar lives docked at the bottom, hidden until invoked
+        # (theme.css sets `display: none`; action_search flips it on).
+        with Horizontal(id="search-bar"):
+            yield _SearchInput(
+                placeholder="検索 (正規表現 / Enterで確定 / Escで閉じる)",
+                id="search-input",
+            )
+            yield Static("", id="search-count")
 
     async def on_mount(self) -> None:
         viewer = self.query_one(MarkdownViewer)
@@ -367,20 +421,28 @@ class MdViewerApp(App):
         self.push_screen(TocScreen(viewer, toc_data))
 
     def action_next_heading(self) -> None:
-        self._jump_to(MarkdownHeader, direction=1)
+        if self._search_hits:
+            self._step_match(1)
+        else:
+            self._jump_to(self._all_headings(), direction=1)
 
     def action_prev_heading(self) -> None:
-        self._jump_to(MarkdownHeader, direction=-1)
+        if self._search_hits:
+            self._step_match(-1)
+        else:
+            self._jump_to(self._all_headings(), direction=-1)
 
     def action_next_hunk(self) -> None:
-        self._jump_to(DiffHunk, direction=1)
+        self._jump_to(list(self.query_one(MarkdownViewer).document.query(DiffHunk)), direction=1)
 
     def action_prev_hunk(self) -> None:
-        self._jump_to(DiffHunk, direction=-1)
+        self._jump_to(list(self.query_one(MarkdownViewer).document.query(DiffHunk)), direction=-1)
 
-    def _jump_to(self, widget_type: type[Widget], *, direction: int) -> None:
+    def _all_headings(self) -> list[Widget]:
+        return list(self.query_one(MarkdownViewer).document.query(MarkdownHeader))
+
+    def _jump_to(self, targets: list[Widget], *, direction: int) -> None:
         viewer = self.query_one(MarkdownViewer)
-        targets = list(viewer.document.query(widget_type))
         if not targets:
             return
         positions = sorted(w.virtual_region.y for w in targets)
@@ -393,6 +455,162 @@ class MdViewerApp(App):
                 (y for y in reversed(positions) if y < current - threshold), positions[0]
             )
         viewer.scroll_to(y=target_y, animate=False)
+
+    def action_search(self) -> None:
+        """Open the `/` search bar, prefilled with the last query."""
+        self.query_one("#search-bar").display = True
+        box = self.query_one("#search-input", Input)
+        box.value = self._search_query
+        box.focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        # Only our search box; ignore an Ask AI Input.Submitted bubbling up.
+        if event.input.id != "search-input":
+            return
+        self._search_query = event.value
+        self._run_search()
+        # Drop focus off the input so n/p reach the App's bindings (the viewer is
+        # can_focus=False, so we blur rather than focus it). The bar stays visible
+        # as a status line (query + position) while a search is active, so
+        # movement is legible; an empty query clears it (see _run_search).
+        self.set_focus(None)
+
+    def _cancel_search_edit(self) -> None:
+        """Esc in the box: stop editing without quitting. Keep an active search's
+        status line up; otherwise hide the (now-irrelevant) empty bar."""
+        if not self._search_hits:
+            self.query_one("#search-bar").display = False
+        self.set_focus(None)
+
+    def _run_search(self) -> None:
+        """Recompute hits for `_search_query` and focus the first one.
+
+        A *hit* is one matched substring (block + offset span); `n`/`p` step
+        through hits one at a time, so a block with several matches is walked
+        occurrence-by-occurrence, not skipped in one jump. Every hit is washed in
+        colour; the current one is brighter. `_search_matches` is the de-duped
+        list of blocks that contain a hit (for whole-block restore). An empty
+        query clears the search and restores heading navigation.
+        """
+        viewer = self.query_one(MarkdownViewer)
+        count = self.query_one("#search-count", Static)
+        self._clear_search_highlights()
+        pattern = compile_query(self._search_query)
+        self._search_pattern = pattern
+        if pattern is None:
+            self._reset_search_state()
+            count.update("")
+            self.query_one("#search-bar").display = False
+            return
+        hits: list[tuple[Widget, int, int, int]] = []
+        widgets: list[Widget] = []
+        for w in viewer.document.query("*"):
+            if not isinstance(w, ATOMIC_BLOCKS):
+                continue
+            text = _search_text(w)
+            spans = [m.span() for m in pattern.finditer(text) if m.end() > m.start()]
+            if spans:
+                widgets.append(w)
+                # line index of each match within the block, so n/p can scroll to
+                # the matched line (preformatted blocks are one row per line).
+                hits.extend((w, start, end, text.count("\n", 0, start)) for start, end in spans)
+        self._search_hits = hits
+        self._search_matches = widgets
+        if not hits:
+            self._search_index = 0
+            count.update("一致なし")
+            return
+        for w in widgets:
+            self._paint_widget(w, pattern, current_span=None)
+        # Start at the first hit whose block is at/below the current viewport.
+        current = viewer.scroll_y
+        self._search_index = next(
+            (i for i, hit in enumerate(hits) if hit[0].virtual_region.y > current + 1), 0
+        )
+        self._focus_current()
+
+    def _step_match(self, direction: int) -> None:
+        """Advance to the next/previous hit, wrapping around the ends."""
+        if not self._search_hits:
+            return
+        prev = self._search_index
+        self._search_index = (prev + direction) % len(self._search_hits)
+        self._focus_current(prev_index=prev)
+
+    def _focus_current(self, prev_index: int | None = None) -> None:
+        """Brighten the current hit, scroll its block into view, show position.
+
+        *prev_index* (when stepping) has its block repainted with every hit in the
+        subtler wash, so only one occurrence ever wears the current colour.
+        """
+        viewer = self.query_one(MarkdownViewer)
+        hits = self._search_hits
+        pattern = self._search_pattern
+        if not hits or pattern is None:
+            return
+        widget, start, end, line = hits[self._search_index]
+        if prev_index is not None and 0 <= prev_index < len(hits):
+            prev_widget = hits[prev_index][0]
+            if prev_widget is not widget:
+                self._paint_widget(prev_widget, pattern, current_span=None)
+        for w in viewer.document.query(".search-current"):
+            w.remove_class("search-current")
+        widget.add_class("search-current")  # marker (no CSS); the wash is per-word
+        self._paint_widget(widget, pattern, current_span=(start, end))
+        # Scroll to the matched line within the block (not just the block top), so
+        # stepping through hits inside a tall block (a long fence/diff) still moves
+        # the view. Keep a couple of rows of lead-in for context.
+        target_y = max(0, widget.virtual_region.y + line - 2)
+        viewer.scroll_to(y=target_y, animate=False)
+        self.query_one("#search-count", Static).update(
+            f"{self._search_index + 1}/{len(hits)} 件"
+        )
+
+    def _paint_widget(
+        self, widget: Widget, pattern: re.Pattern[str], *, current_span: tuple[int, int] | None
+    ) -> None:
+        """Wash every match in *widget* subtly; brighten *current_span* if given."""
+        if isinstance(widget, DiffHunk):
+            text = render_hunk(widget._hunk, file_path=widget._file_path)
+            text.highlight_regex(pattern, _MATCH_HL)
+            if current_span is not None:
+                text.stylize(_CURRENT_HL, *current_span)
+            widget.update(text)
+        elif isinstance(widget, MarkdownFence):
+            content = widget._highlighted_code.highlight_regex(pattern, style=_MATCH_HL)
+            if current_span is not None:
+                content = content.stylize(_CURRENT_HL, *current_span)
+            widget.query_one("#code-content", Label).update(content)
+        elif isinstance(widget, MarkdownBlock):
+            original = self._search_originals.setdefault(widget, widget._content)
+            content = original.highlight_regex(pattern, style=_MATCH_HL)
+            if current_span is not None:
+                content = content.stylize(_CURRENT_HL, *current_span)
+            widget.set_content(content)
+
+    def _restore_block(self, widget: Widget) -> None:
+        """Undo `_paint_widget`, returning *widget* to its unsearched render."""
+        if isinstance(widget, DiffHunk):
+            widget.update(render_hunk(widget._hunk, file_path=widget._file_path))
+        elif isinstance(widget, MarkdownFence):
+            widget.query_one("#code-content", Label).update(widget._highlighted_code)
+        elif isinstance(widget, MarkdownBlock):
+            original = self._search_originals.get(widget)
+            if original is not None:
+                widget.set_content(original)
+
+    def _reset_search_state(self) -> None:
+        self._search_hits = []
+        self._search_matches = []
+        self._search_index = 0
+
+    def _clear_search_highlights(self) -> None:
+        for widget in self._search_matches:
+            self._restore_block(widget)
+        self._search_originals.clear()
+        self._reset_search_state()
+        for w in self.query_one(MarkdownViewer).document.query(".search-current"):
+            w.remove_class("search-current")
 
     def on_click(self, event: events.Click) -> None:
         """Mouse-driven semantic selection.
@@ -464,6 +682,25 @@ class MdViewerApp(App):
                 if region.area and region.bottom > top and region.y < bottom:
                     return node
         return None
+
+
+def _search_text(widget: Widget) -> str:
+    """Plain text of a rendered block, for `/` search matching *and* highlighting.
+
+    The offsets `pattern.finditer` returns here are used to colour the matched
+    substrings, so this must be the very text those colours land on: a code
+    fence's syntax-highlighted plain (== its raw code), a `DiffHunk`'s *rendered*
+    text (gutter included — `@@` headers and code still match, and offsets line
+    up with what's drawn), and every other Markdown block's rendered `Content`
+    (heading text without the leading `##`, etc.).
+    """
+    if isinstance(widget, DiffHunk):
+        return render_hunk(widget._hunk, file_path=widget._file_path).plain
+    if isinstance(widget, MarkdownFence):
+        return widget._highlighted_code.plain
+    if isinstance(widget, MarkdownBlock):
+        return widget._content.plain
+    return ""
 
 
 def _paragraph_image_src(paragraph: MarkdownParagraph) -> str | None:
