@@ -35,6 +35,79 @@ def test_sample_svg_paragraph_is_replaced_with_image_widget() -> None:
     asyncio.run(driver())
 
 
+def test_event_flow_fences_are_replaced_with_widgets() -> None:
+    """An ```event-flow-svg fence is swapped for an EventFlow widget; no such fence remains."""
+    import asyncio
+
+    md = FIXTURES / "eventflow.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            from textual.widgets._markdown import MarkdownFence
+
+            from mdview.eventflow_widget import EventFlow
+
+            flows = list(app.query(EventFlow))
+            assert len(flows) == 2, "expected one EventFlow per event-flow-svg fence"
+
+            remaining = [
+                f
+                for f in app.query(MarkdownFence)
+                if (f.lexer or "").lower() == "event-flow-svg"
+            ]
+            assert not remaining, "event-flow-svg fences must be removed after injection"
+
+    asyncio.run(driver())
+
+
+def test_shift_right_scrolls_a_wide_flow() -> None:
+    """shift+right scrolls the visible event flow horizontally."""
+    import asyncio
+
+    md = FIXTURES / "eventflow.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(40, 24)) as pilot:  # narrow: flow overflows
+            await pilot.pause()
+            await pilot.pause()
+            from mdview.eventflow_widget import EventFlow
+
+            flow = next(iter(app.query(EventFlow)))
+            before = flow.scroll_offset.x
+            await pilot.press("shift+right")
+            await pilot.pause()
+            assert flow.scroll_offset.x > before
+
+    asyncio.run(driver())
+
+
+def test_event_flow_selection_yields_dsl() -> None:
+    """Selecting a whole flow (the ladder's top rung) yields its DSL, not box-art."""
+    import asyncio
+
+    md = FIXTURES / "eventflow.md"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            from textual.selection import SELECT_ALL
+
+            from mdview.eventflow_widget import EventFlow
+
+            flow = next(iter(app.query(EventFlow)))
+            text, _ = flow.get_selection(SELECT_ALL)
+            assert "|community|" in text
+            assert "┌" not in text  # box-art excluded
+
+    asyncio.run(driver())
+
+
 def test_all_headings_render_in_claude_orange() -> None:
     """H1–H6 share a single orange hue (#d97757, Claude's mascot color)."""
     import asyncio
