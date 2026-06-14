@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from textual.widgets import MarkdownViewer
 
 from mdview.app import MdViewerApp, _paragraph_image_src
 
@@ -2448,3 +2449,144 @@ def test_section_insight_uses_extended_timeout_and_concise_svg(
             assert captured["concise_svg"] is True
 
     asyncio.run(driver())
+
+
+def test_external_change_reloads_in_place() -> None:
+    """An external write is picked up by `_reload_from_disk`, updating the buffer
+    and the disk baseline while preserving scroll position."""
+    import asyncio
+
+    async def driver(tmp: Path) -> None:
+        target = tmp / "doc.md"
+        target.write_text("# 元の見出し\n\n本文\n", encoding="utf-8")
+        app = MdViewerApp(target)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            viewer = app.query_one(MarkdownViewer)
+            assert "元の見出し" in viewer.document.source
+
+            target.write_text("# 新しい見出し\n\n書き換え後\n", encoding="utf-8")
+            await app._reload_from_disk()
+            await pilot.pause()
+
+            assert "新しい見出し" in viewer.document.source
+            assert app._disk_baseline == "# 新しい見出し\n\n書き換え後\n"
+            assert not app._is_dirty()
+
+    import tempfile as _tempfile
+
+    with _tempfile.TemporaryDirectory() as d:
+        asyncio.run(driver(Path(d)))
+
+
+def test_external_change_preserves_scroll() -> None:
+    """A reload keeps the reader's scroll position (via _rerender_preserving_scroll)."""
+    import asyncio
+
+    long_doc = "# 見出し\n\n" + "\n\n".join(f"段落 {i}" for i in range(200)) + "\n"
+
+    async def driver(tmp: Path) -> None:
+        target = tmp / "long.md"
+        target.write_text(long_doc, encoding="utf-8")
+        app = MdViewerApp(target)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            viewer = app.query_one(MarkdownViewer)
+            viewer.scroll_to(y=40, animate=False)
+            await pilot.pause()
+            before = viewer.scroll_y
+            assert before > 0
+
+            target.write_text(long_doc + "\n追記\n", encoding="utf-8")
+            await app._reload_from_disk()
+            await pilot.pause()
+
+            assert abs(viewer.scroll_y - before) <= 2
+
+    import tempfile as _tempfile
+
+    with _tempfile.TemporaryDirectory() as d:
+        asyncio.run(driver(Path(d)))
+
+
+def test_reload_discards_unsaved_edits() -> None:
+    """When dirty, an external change still reloads and drops the undo stack."""
+    import asyncio
+
+    async def driver(tmp: Path) -> None:
+        target = tmp / "doc.md"
+        target.write_text("# 元\n\n本文\n", encoding="utf-8")
+        app = MdViewerApp(target)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            viewer = app.query_one(MarkdownViewer)
+            # Simulate an in-memory AI edit: buffer diverges from disk baseline.
+            app._undo_stack.append(viewer.document.source)
+            await viewer.document.update("# 元\n\n編集後の本文\n")
+            assert app._is_dirty()
+
+            target.write_text("# 外部更新\n\n別の本文\n", encoding="utf-8")
+            await app._reload_from_disk()
+            await pilot.pause()
+
+            assert "外部更新" in viewer.document.source
+            assert app._undo_stack == []
+            assert not app._is_dirty()
+
+    import tempfile as _tempfile
+
+    with _tempfile.TemporaryDirectory() as d:
+        asyncio.run(driver(Path(d)))
+
+
+def test_reload_noop_when_content_identical() -> None:
+    """A reload whose disk content equals the buffer only resyncs the baseline."""
+    import asyncio
+
+    async def driver(tmp: Path) -> None:
+        target = tmp / "doc.md"
+        text = "# 見出し\n\n本文\n"
+        target.write_text(text, encoding="utf-8")
+        app = MdViewerApp(target)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            viewer = app.query_one(MarkdownViewer)
+            doc_obj = viewer.document
+            app._disk_baseline = "stale"  # prove the guard resyncs it
+            await app._reload_from_disk()
+            await pilot.pause()
+            # Same document instance (no re-render) and baseline resynced.
+            assert app.query_one(MarkdownViewer).document is doc_obj
+            assert app._disk_baseline == text
+
+    import tempfile as _tempfile
+
+    with _tempfile.TemporaryDirectory() as d:
+        asyncio.run(driver(Path(d)))
+
+
+def test_watcher_started_for_file_not_for_stdin() -> None:
+    """A file-backed document starts a watch worker; a stdin document does not."""
+    import asyncio
+
+    async def driver(tmp: Path) -> None:
+        target = tmp / "doc.md"
+        target.write_text("# 見出し\n", encoding="utf-8")
+        file_app = MdViewerApp(target)
+        async with file_app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            assert file_app._watch_task is not None
+
+        stdin_app = MdViewerApp(content="# 見出し\n")
+        async with stdin_app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            assert stdin_app._watch_task is None
+
+    import tempfile as _tempfile
+
+    with _tempfile.TemporaryDirectory() as d:
+        asyncio.run(driver(Path(d)))

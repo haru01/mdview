@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import tempfile
 import types
+from asyncio import CancelledError
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,6 +12,7 @@ from time import monotonic
 from urllib.parse import unquote
 
 import regex
+from watchfiles import awatch
 
 from markdown_it.token import Token
 from rich.cells import cell_len
@@ -262,6 +265,12 @@ class MdViewerApp(App):
         self._disk_baseline: str = ""
         self._undo_stack: list[str] = []
         self._editing: bool = False
+        # File-watch state: a resident asyncio task consuming `awatch` over the
+        # viewed file's directory; an external write to the file triggers an
+        # in-place reload. A plain task (not a Textual worker) because it never
+        # completes — a worker would hang `App.workers.wait_for_complete()`.
+        # Re-pointed on navigation, cancelled on unmount, skipped for stdin.
+        self._watch_task: asyncio.Task[None] | None = None
         if content is not None:
             # stdin has no source directory, so relative images/links resolve
             # against base_dir (defaults to CWD). Stash the text in the tempdir
@@ -302,6 +311,7 @@ class MdViewerApp(App):
             return
         await self._render_source(text)
         self._disk_baseline = text
+        self._start_watching()
 
     async def _inject_images(self) -> None:
         viewer = self.query_one(MarkdownViewer)
@@ -644,11 +654,81 @@ class MdViewerApp(App):
         self.run_worker(self._rerender_preserving_scroll(new_source), exclusive=True)
 
     async def _rerender_preserving_scroll(self, text: str) -> None:
-        """Re-render *text* (an edit/undo) while keeping the reader's scroll y."""
+        """Re-render *text* (an edit/undo/external reload) while keeping scroll y."""
         viewer = self.query_one(MarkdownViewer)
         y = viewer.scroll_y
         await self._render_source(text)
         viewer.scroll_to(y=y, animate=False)
+
+    def _start_watching(self) -> None:
+        """(Re)start the resident task watching the viewed file for external
+        edits. Called on load and on every navigation so it tracks the *current*
+        `_md_path`; the old task is cancelled first. stdin has no real file, so
+        it is not watched."""
+        if self._watch_task is not None:
+            self._watch_task.cancel()
+            self._watch_task = None
+        if self._display_name == "(stdin)":
+            return
+        # Pass the dir/path as args so the task watches a fixed snapshot; a later
+        # navigation cancels this task and starts a fresh one.
+        self._watch_task = asyncio.create_task(
+            self._watch_file(self._md_dir, self._md_path)
+        )
+
+    def on_unmount(self) -> None:
+        """Stop the file watcher so its background thread doesn't outlive the app."""
+        if self._watch_task is not None:
+            self._watch_task.cancel()
+            self._watch_task = None
+
+    async def _watch_file(self, watch_dir: Path, target: Path) -> None:
+        """Watch *watch_dir* and reload when *target* changes on disk.
+
+        We watch the parent directory rather than the file itself so an editor's
+        atomic-rename save (write temp, rename over the original — which replaces
+        the inode) is still detected; changes to other files in the dir are
+        filtered out. Reload runs as a separate `exclusive` worker so it can't
+        race the navigation/edit workers that also call `document.update`.
+        """
+        target_str = str(target)
+        try:
+            async for changes in awatch(watch_dir):
+                if any(str(Path(p).resolve()) == target_str for _, p in changes):
+                    self.run_worker(self._reload_from_disk(), exclusive=True)
+        except CancelledError:
+            raise  # normal: a navigation re-pointed the watcher
+        except Exception:
+            return  # dir removed etc. — stop watching quietly rather than crash
+
+    async def _reload_from_disk(self) -> None:
+        """Re-read the viewed file and re-render in place (external-edit reload).
+
+        Always reloads, even with unsaved AI edits (dirty) — the on-disk content
+        wins, and the undo stack is dropped. A content-identical read (a `touch`,
+        or our own `:w` echoing back) is a no-op beyond resyncing the baseline, so
+        the view never flashes for a write we made ourselves.
+        """
+        try:
+            text = self._md_path.read_text(encoding="utf-8")
+        except OSError as e:
+            self.notify(f"再読み込みに失敗しました: {e}", severity="error")
+            return
+        viewer = self.query_one(MarkdownViewer)
+        if text == viewer.document.source:
+            self._disk_baseline = text
+            return
+        was_dirty = self._is_dirty()
+        await self._rerender_preserving_scroll(text)
+        self._disk_baseline = text
+        self._undo_stack.clear()
+        if was_dirty:
+            self.notify(
+                "外部更新を検出し再読み込みしました(未保存の編集は破棄)",
+                severity="warning",
+            )
+        else:
+            self.notify("ファイルが変更されたので再読み込みしました")
 
     def _render_mermaid_fence(self, code: str, mmdc: str) -> Image | None:
         digest = hashlib.sha1(code.encode("utf-8")).hexdigest()[:12]
@@ -766,6 +846,7 @@ class MdViewerApp(App):
         self._disk_baseline = text
         self._undo_stack.clear()
         self._editing = False
+        self._start_watching()  # re-point the watcher at the new directory/file
         if anchor:
             self.call_after_refresh(viewer.document.goto_anchor, anchor)
         else:
