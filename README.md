@@ -128,7 +128,24 @@ gh pr diff 123 | mdview -
   npm install -g @mermaid-js/mermaid-cli
   ```
 
-  `mmdc` が見つからない場合、Mermaid フェンスはコードブロックのまま表示されます。
+  さらに `mmdc` は内部でヘッドレス Chrome（puppeteer）を使うため、ブラウザ本体も別途インストールが必要です。`mmdc` は `headless: 'shell'` で起動するので、**通常版 Chrome ではなく `chrome-headless-shell`** を、`mermaid-cli` が要求するバージョンで入れます:
+
+  ```sh
+  npx puppeteer browsers install chrome-headless-shell
+  ```
+
+  これが無いと `mmdc` は `Could not find Chrome (ver. ...)` で失敗します（エラー表記は "Chrome" ですが、必要なのは `chrome-headless-shell`）。バージョンが合わない旨のエラーが出る場合は、要求されたバージョンを明示します（例: `npx puppeteer browsers install chrome-headless-shell@148.0.7778.97`）。
+
+  例えば次のような Mermaid フェンスがインラインの図として表示されます:
+
+  ```mermaid
+  flowchart LR
+      A[Markdown] --> B{mmdc あり?}
+      B -->|Yes| C[図として表示]
+      B -->|No| D[コードブロックのまま]
+  ```
+
+  `mmdc` が見つからない場合や、上記ブラウザが無くレンダリングに失敗した場合は、Mermaid フェンスはコードブロックのまま表示されます。
 
 - Ask AI（`h`）と AI 編集（`w`）、見出しの解説（`💡`）を使う場合は [`claude`（Claude Code）](https://claude.com/claude-code) CLI が PATH 上に必要。見つからない場合、`h`/`w` は通知を表示し、見出しの `💡` マーカーは出ません。
 
