@@ -520,9 +520,9 @@ def test_ask_ai_opens_modal_with_selection(tmp_path: Path, monkeypatch: pytest.M
                 "input should pre-fill a plain (non-SVG) default question"
             )
 
-            # SVG diagramming is opt-in: the toggle starts unchecked.
+            # SVG diagramming is on by default: the toggle starts checked.
             toggle = app.screen.query_one("#ask-ai-svg-toggle", Checkbox)
-            assert toggle.value is False, "SVG mode should be off by default"
+            assert toggle.value is True, "SVG mode should be on by default"
 
             # The popup is enlarged for research-style reading.
             dialog = app.screen.query_one("#ask-ai-dialog")
@@ -622,7 +622,7 @@ def test_ask_ai_toggling_svg_refocuses_input(
             assert app.screen.focused is checkbox
             checkbox.toggle()
             await pilot.pause()
-            assert checkbox.value is True
+            assert checkbox.value is False
             assert app.screen.focused is app.screen.query_one("#ask-ai-input", Input), (
                 "toggling SVG mode should hand focus back to the input"
             )
@@ -740,10 +740,11 @@ def test_ask_ai_plain_answer_renders_no_image(
 def test_ask_ai_svg_toggle_off_does_not_render_svg(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """With the SVG toggle off (the default), an SVG in the answer is left as
+    """With the SVG toggle off, an SVG in the answer is left as
     plain text — no image is rendered."""
     import asyncio
 
+    from textual.widgets import Checkbox
     from textual_image.widget import Image
 
     from mdview.ask_ai import AskAiScreen
@@ -767,7 +768,8 @@ def test_ask_ai_svg_toggle_off_does_not_render_svg(
             await pilot.pause()
             assert isinstance(app.screen, AskAiScreen)
 
-            # Leave the toggle off (default) and submit.
+            # Turn the toggle off and submit.
+            app.screen.query_one("#ask-ai-svg-toggle", Checkbox).value = False
             await pilot.press("enter")
             cwd_log = tmp_path / "cwd.log"
             for _ in range(40):

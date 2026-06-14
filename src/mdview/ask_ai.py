@@ -95,7 +95,7 @@ class AskAiScreen(ScrollableModalScreen):
                 placeholder="この抜粋について質問… (Enterで送信, Escで閉じる)",
                 id="ask-ai-input",
             )
-            yield Checkbox("SVGで図解する", value=False, id="ask-ai-svg-toggle")
+            yield Checkbox("SVGで図解する", value=True, id="ask-ai-svg-toggle")
             loading = LoadingIndicator(id="ask-ai-loading")
             loading.display = False
             yield loading
