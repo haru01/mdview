@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from textual.widgets import MarkdownViewer
+from textual.widgets import DirectoryTree, MarkdownViewer
 
 from mdview.app import MdViewerApp, _paragraph_image_src
 
@@ -2676,5 +2676,27 @@ def test_external_change_to_diff_file_keeps_delta_rendering(tmp_path) -> None:
             await pilot.pause()
             assert app.query(DiffHunk)  # STILL delta, not raw markdown
             assert app._diff_files is not None
+
+    asyncio.run(scenario())
+
+
+def test_e_toggles_sidebar_visibility():
+    import asyncio
+
+    async def scenario():
+        app = MdViewerApp(FIXTURES / "simple.md")
+        async with app.run_test() as pilot:
+            # Single-file launch: the sidebar is not mounted until first opened
+            # (a DirectoryTree's resident loader worker would otherwise hang
+            # App.workers.wait_for_complete()).
+            assert not app.query("#sidebar")
+            await pilot.press("e")
+            await pilot.pause()
+            sidebar = app.query_one("#sidebar", DirectoryTree)
+            assert sidebar.display
+            assert app.focused is sidebar
+            await pilot.press("e")
+            await pilot.pause()
+            assert not sidebar.display
 
     asyncio.run(scenario())

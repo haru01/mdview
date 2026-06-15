@@ -14,6 +14,16 @@ MarkdownViewer {
     background: $surface;
 }
 
+#main-row {
+    height: 1fr;
+}
+
+#sidebar {
+    width: 32;
+    border-right: solid $orange 30%;
+    background: $surface;
+}
+
 Markdown {
     padding: 1 2;
     background: $surface;
