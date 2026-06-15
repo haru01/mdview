@@ -72,20 +72,21 @@ def test_build_prompt_includes_document_selection_and_question() -> None:
     assert "これは何?" in prompt
 
 
-def test_build_prompt_without_svg_dir_has_no_save_instruction() -> None:
+def test_build_prompt_without_svg_dir_has_no_svg_instruction() -> None:
     prompt = build_prompt("s", "q", "doc")
-    assert ".svg" not in prompt
+    assert "<svg" not in prompt
 
 
-def test_build_prompt_with_svg_dir_instructs_saving_to_that_absolute_path(
+def test_build_prompt_with_svg_dir_instructs_inline_svg(
     tmp_path: Path,
 ) -> None:
     svg_dir = tmp_path / "out"
     prompt = build_prompt("s", "q", "doc", svg_out_dir=svg_dir)
-    # The absolute output directory must appear so Claude saves SVGs there...
-    assert str(svg_dir) in prompt
-    # ...and the instruction must mention the .svg extension.
-    assert ".svg" in prompt
+    # The diagram must be requested inline (no file-write permission needed)...
+    assert "<svg" in prompt
+    assert "インライン" in prompt
+    # ...and Claude must NOT be told to save to the directory path.
+    assert str(svg_dir) not in prompt
 
 
 def test_build_prompt_concise_svg_adds_simplicity_instruction(tmp_path: Path) -> None:

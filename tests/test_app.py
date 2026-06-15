@@ -2451,6 +2451,118 @@ def test_section_insight_uses_extended_timeout_and_concise_svg(
     asyncio.run(driver())
 
 
+_DIFF_TWO_FILES = (
+    "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n"
+    "@@ -1,2 +1,2 @@\n-old_x\n+new_x\n"
+    "diff --git a/y.py b/y.py\n--- a/y.py\n+++ b/y.py\n"
+    "@@ -1,2 +1,2 @@\n-old_y\n+new_y\n"
+)
+
+
+def test_diff_file_headings_gain_insight_lightbulb(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Opening a diff gives each `## @ file` heading a clickable 💡, just like a
+    prose section heading (the feature is no longer skipped for diffs)."""
+    import asyncio
+
+    from textual.widgets._markdown import MarkdownH2
+
+    monkeypatch.setattr("mdview.app.find_claude", lambda: "claude")
+
+    async def driver() -> None:
+        app = _diff_app(_DIFF_TWO_FILES)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            assert app._diff_files is not None
+            assert len(app._insight_headings) == 2, "one marker per diffed file"
+            for h in app.query(MarkdownH2):
+                assert h._content.plain.rstrip().endswith("💡"), h._content.plain
+
+    asyncio.run(driver())
+
+
+def test_diff_insight_uses_diff_question(monkeypatch: pytest.MonkeyPatch) -> None:
+    """For a diff, the insight prompt is `_DIFF_INSIGHT_QUESTION` (about the
+    change), not the prose `_INSIGHT_QUESTION`; the file's diff is the selection."""
+    import asyncio
+
+    from mdview.app import _DIFF_INSIGHT_QUESTION
+
+    captured: dict = {}
+
+    async def fake_ask(
+        selection, question, document, *, claude, cwd,
+        svg_out_dir=None, concise_svg=False, timeout=120.0,
+    ):
+        captured["question"] = question
+        captured["selection"] = selection
+        return "この差分の解説です。"
+
+    monkeypatch.setattr("mdview.app.find_claude", lambda: "claude")
+    monkeypatch.setattr("mdview.app.ask_claude", fake_ask)
+
+    async def driver() -> None:
+        app = _diff_app(_DIFF_TWO_FILES)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            hid = next(iter(app._insight_headings))
+            app.action_section_insight(hid)
+            for _ in range(60):
+                await pilot.pause()
+                if app._insight_state[hid].status == "done":
+                    break
+            assert captured["question"] == _DIFF_INSIGHT_QUESTION
+            assert "@ x.py" in captured["selection"], captured["selection"]
+            assert "```diff" in captured["selection"]
+
+    asyncio.run(driver())
+
+
+def test_diff_insight_run_opens_modal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Clicking a diff file's 💡 runs claude, turns it into 📦, and a second click
+    opens the same explanation modal used for prose sections."""
+    import asyncio
+
+    from mdview.section_insight import SectionInsightScreen
+
+    monkeypatch.setattr("mdview.app.find_claude", lambda: "claude")
+
+    async def fake_ask(
+        selection, question, document, *, claude, cwd,
+        svg_out_dir=None, concise_svg=False, timeout=120.0,
+    ):
+        if svg_out_dir is not None:
+            svg_out_dir.mkdir(parents=True, exist_ok=True)
+            (svg_out_dir / "diagram.svg").write_text(_INSIGHT_SVG, encoding="utf-8")
+        return "この差分の解説です。"
+
+    monkeypatch.setattr("mdview.app.ask_claude", fake_ask)
+
+    async def driver() -> None:
+        app = _diff_app(_DIFF_TWO_FILES)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            hid = next(iter(app._insight_headings))
+            heading = app._insight_headings[hid]
+            app.action_section_insight(hid)
+            for _ in range(60):
+                await pilot.pause()
+                if app._insight_state[hid].status == "done":
+                    break
+            assert app._insight_state[hid].status == "done"
+            assert heading._content.plain.rstrip().endswith("📦"), heading._content.plain
+            assert app._insight_state[hid].svgs, "the saved SVG should be collected"
+
+            app.action_section_insight(hid)
+            await pilot.pause()
+            await pilot.pause()
+            assert isinstance(app.screen, SectionInsightScreen)
+
+    asyncio.run(driver())
+
+
 def test_external_change_reloads_in_place() -> None:
     """An external write is picked up by `_reload_from_disk`, updating the buffer
     and the disk baseline while preserving scroll position."""

@@ -35,13 +35,18 @@ def build_prompt(
         "このドキュメントの内容を文脈として、簡潔に日本語で質問に答えてください。\n\n"
     )
     if svg_out_dir is not None:
-        # SVG mode (opt-in): ask for a diagram and steer Claude to save it into
-        # our temp dir (absolute path) — which the popup renders — instead of
-        # writing into the repository, keeping the prose answer short.
+        # SVG mode (opt-in): ask for a diagram and have Claude write the `<svg>`
+        # *inline* in its reply — which `extract_svgs` lifts out and the popup
+        # renders. Inlining (rather than saving to a file) means the diagram
+        # arrives without needing the Write tool, so it works in any environment
+        # `claude -p` runs in; a headless `claude -p` denies file writes by
+        # default, so a save-to-disk diagram silently never appeared. The prose
+        # still reads short because the SVG is stripped out of it before display.
         prompt += (
-            "回答内容を表すSVG図を作成して解説してください。自己完結した1つの `<svg>` を、"
-            f"次の絶対パスのディレクトリ配下にのみ `.svg` 拡張子で保存してください（リポジトリ内には書き込まないこと）: {svg_out_dir}\n"
-            "保存先パスはユーザーに伝える必要はなく、本文の説明は簡潔にしてください。\n\n"
+            "回答内容を表すSVG図を作成して解説してください。"
+            "自己完結した1つの `<svg>…</svg>` を、応答テキストの中にそのまま（インラインで）出力してください。"
+            "ファイルへの保存やツールの使用はせず、応答に直接 `<svg>` を含めること。\n"
+            "本文の説明は簡潔にしてください。\n\n"
         )
         if concise_svg:
             # Steer toward a fast, light diagram (e.g. the section-insight feature
@@ -155,9 +160,11 @@ async def ask_claude(
 ) -> str:
     """Run the CLI in print mode with the built prompt and return its stdout.
 
-    When ``svg_out_dir`` is given, the prompt asks Claude to save any SVG diagram
-    into that directory so the popup can render it; ``concise_svg`` additionally
-    steers toward a fast, minimal diagram.
+    When ``svg_out_dir`` is given, SVG mode is on: the prompt asks Claude to emit
+    an `<svg>` diagram *inline* in its reply (the caller lifts it out with
+    `extract_svgs`), which needs no file-write permission. ``svg_out_dir`` is also
+    still globbed by callers as a secondary source, so a diagram Claude happens to
+    save is picked up too. ``concise_svg`` steers toward a fast, minimal diagram.
     """
     prompt = build_prompt(
         selection, question, document, svg_out_dir=svg_out_dir, concise_svg=concise_svg

@@ -72,6 +72,12 @@ _INSIGHT_GLYPHS = {"idle": "💡", "done": "📦", "error": "⚠"}
 _INSIGHT_SPINNER = "◐◓◑◒"
 _INSIGHT_MAX_CONCURRENT = 3
 _INSIGHT_QUESTION = "このセクションの内容を、図解のSVGを交えてわかりやすく解説してください。"
+# When the document is a diff, each `## @ file` heading's section is that file's
+# unified diff, so the prose prompt doesn't fit — ask about the *change* instead.
+_DIFF_INSIGHT_QUESTION = (
+    "この差分（diff）の変更内容を、図解のSVGを交えてわかりやすく解説してください。"
+    "何がどう変わったのか、その変更が何を意味するのかを説明してください。"
+)
 # An SVG-illustrated section explanation can take longer than the Ask AI default,
 # so allow more time; `concise_svg` keeps the diagram simple to stay within it.
 _INSIGHT_TIMEOUT_S = 240.0
@@ -459,14 +465,16 @@ class MdViewerApp(App):
         Clicking it asks `claude` to explain that section (with an SVG diagram)
         in the background; while running the 💡 spins, and on success it becomes
         a 📦 whose click opens the explanation. The whole feature is skipped when
-        `claude` is absent (degrade to nothing) or for a whole-document diff
-        (file headings aren't prose sections). The heading widget is left
+        `claude` is absent (degrade to nothing). It works for prose sections and,
+        for a diff, for each `## @ file` heading too — there the section *is* that
+        file's unified diff, so `_run_section_insight` asks about the change
+        (`_DIFF_INSIGHT_QUESTION`) rather than prose. The heading widget is left
         structurally untouched — only its rendered Content gains the marker — so
         navigation/TOC/selection keep working; a per-heading `get_selection`
         override keeps the marker out of copied/searched/AI'd text.
         """
         self._insight_claude = find_claude()
-        if self._insight_claude is None or self._diff_files is not None:
+        if self._insight_claude is None:
             return
         for heading in self._headings_at_level(2):
             hid = heading.id
@@ -531,10 +539,15 @@ class MdViewerApp(App):
             # A per-heading dir so concurrent runs never mix up their diagrams.
             svg_out_dir = Path(self._tempdir.name) / "section-svg" / str(hid)
             self._reset_svg_dir(svg_out_dir)
+            question = (
+                _DIFF_INSIGHT_QUESTION
+                if self._diff_files is not None
+                else _INSIGHT_QUESTION
+            )
             try:
                 result = await ask_claude(
                     section,
-                    _INSIGHT_QUESTION,
+                    question,
                     document,
                     claude=self._insight_claude,
                     cwd=self._md_dir,
