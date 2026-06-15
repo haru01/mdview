@@ -301,9 +301,16 @@ class MdViewerApp(App):
             self._md_dir = (base_dir or Path.cwd()).resolve()
             self._display_name = "(stdin)"
         else:
-            self._md_path = md_path.resolve()
-            self._md_dir = self._md_path.parent
-            self._display_name = self._md_path.name
+            if md_path is None:
+                # Directory launch with no viewable file: no document yet, the
+                # sidebar is the only content until the user picks a file.
+                self._md_path = None
+                self._md_dir = self._root_dir or Path.cwd()
+                self._display_name = "(no file)"
+            else:
+                self._md_path = md_path.resolve()
+                self._md_dir = self._md_path.parent
+                self._display_name = self._md_path.name
 
     def compose(self) -> ComposeResult:
         # The viewer lives in a horizontal row; the file-tree sidebar is mounted
@@ -334,6 +341,13 @@ class MdViewerApp(App):
 
     async def on_mount(self) -> None:
         self.title = self._display_name
+        if self._md_path is None:
+            # Empty directory launch: nothing to render yet — show the sidebar
+            # and prompt the user to choose a file.
+            tree = await self._ensure_sidebar()
+            tree.focus()
+            self.notify("左のツリーからファイルを選択してください")
+            return
         try:
             text = self._md_path.read_text(encoding="utf-8")
         except OSError as e:

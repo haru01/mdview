@@ -26,6 +26,15 @@ def main() -> None:
     if not path.exists():
         print(f"mdview: {path}: no such file", file=sys.stderr)
         sys.exit(1)
+    if path.is_dir():
+        if not sys.stdout.isatty():
+            print(f"mdview: {path}: is a directory", file=sys.stderr)
+            sys.exit(1)
+        from mdview.app import MdViewerApp
+        from mdview.filetree import initial_file
+
+        MdViewerApp(initial_file(path), root_dir=path).run()
+        return
     if not path.is_file():
         print(f"mdview: {path}: not a regular file", file=sys.stderr)
         sys.exit(1)

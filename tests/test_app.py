@@ -2721,3 +2721,37 @@ def test_selecting_tree_file_switches_viewer():
             assert app._md_path == target
 
     asyncio.run(scenario())
+
+
+def test_directory_launch_shows_sidebar_and_opens_readme(tmp_path):
+    import asyncio
+    from mdview.filetree import initial_file
+
+    async def scenario():
+        (tmp_path / "README.md").write_text("# Readme\n\nbody\n")
+        (tmp_path / "other.md").write_text("# Other\n")
+        first = initial_file(tmp_path)
+        app = MdViewerApp(first, root_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sidebar = app.query_one("#sidebar", DirectoryTree)
+            assert sidebar.display
+            assert app._md_path == (tmp_path / "README.md").resolve()
+
+    asyncio.run(scenario())
+
+
+def test_empty_directory_launch_shows_placeholder(tmp_path):
+    import asyncio
+    from mdview.filetree import initial_file
+
+    async def scenario():
+        (tmp_path / "notes.txt").write_text("not markdown")
+        first = initial_file(tmp_path)  # None — no viewable file
+        app = MdViewerApp(first, root_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._md_path is None
+            assert app.query_one("#sidebar", DirectoryTree).display
+
+    asyncio.run(scenario())
