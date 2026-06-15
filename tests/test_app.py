@@ -2647,3 +2647,34 @@ def test_load_file_renders_diff_as_hunks() -> None:
             assert app._diff_files is not None
 
     asyncio.run(scenario())
+
+
+def test_external_change_to_diff_file_keeps_delta_rendering(tmp_path) -> None:
+    """An external edit to a loaded diff file stays delta-rendered, not raw."""
+    import asyncio
+
+    from mdview.diff_widget import DiffHunk
+
+    async def scenario() -> None:
+        diff_a = (
+            "--- a/foo.py\n+++ b/foo.py\n@@ -1,2 +1,2 @@\n"
+            "-old line\n+new line\n unchanged\n"
+        )
+        diff_b = (
+            "--- a/foo.py\n+++ b/foo.py\n@@ -1,2 +1,2 @@\n"
+            "-old line\n+changed again\n unchanged\n"
+        )
+        diff_path = tmp_path / "x.diff"
+        diff_path.write_text(diff_a)
+        app = MdViewerApp(diff_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.query(DiffHunk)  # delta-rendered on initial load
+            assert app._diff_files is not None
+            diff_path.write_text(diff_b)  # external edit
+            await app._reload_from_disk()
+            await pilot.pause()
+            assert app.query(DiffHunk)  # STILL delta, not raw markdown
+            assert app._diff_files is not None
+
+    asyncio.run(scenario())

@@ -39,7 +39,7 @@ from textual_image.widget import Image
 from mdview.ai import AiQueryError, ask_claude, find_claude
 from mdview.ask_ai import AskAiScreen
 from mdview.command import parse_command
-from mdview.diff import FileDiff, parse_hunk_lines
+from mdview.diff import FileDiff, diff_to_markdown, looks_like_diff, parse_diff, parse_hunk_lines
 from mdview.diff_preview import DiffPreviewScreen
 from mdview.diff_widget import DiffHunk
 from mdview.diffview import render_hunk
@@ -310,7 +310,11 @@ class MdViewerApp(App):
         except OSError as e:
             self.exit(message=f"mdview: failed to load {self._md_path}: {e}")
             return
-        await self._render_source(text)
+        # A pre-supplied diff model (the CLI diff path) means `text` is already
+        # the scaffolded Markdown — render as-is. Otherwise detect a diff from the
+        # raw text so `mdview x.diff` renders delta-style too.
+        source = text if self._diff_files is not None else self._source_for(text)
+        await self._render_source(source)
         self._disk_baseline = text
         self._start_watching()
 
@@ -715,12 +719,11 @@ class MdViewerApp(App):
         except OSError as e:
             self.notify(f"再読み込みに失敗しました: {e}", severity="error")
             return
-        viewer = self.query_one(MarkdownViewer)
-        if text == viewer.document.source:
+        if text == self._disk_baseline:
             self._disk_baseline = text
             return
         was_dirty = self._is_dirty()
-        await self._rerender_preserving_scroll(text)
+        await self._rerender_preserving_scroll(self._source_for(text))
         self._disk_baseline = text
         self._undo_stack.clear()
         if was_dirty:
@@ -832,6 +835,20 @@ class MdViewerApp(App):
         await self._inject_event_flows()
         await self._inject_section_insights()
 
+    def _source_for(self, text: str) -> str:
+        """Return the source to render for raw file *text*, updating `_diff_files`.
+
+        A unified diff is scaffolded to delta-style Markdown (and the parsed
+        model stashed on `_diff_files` for `_inject_diff_hunks`); anything else
+        renders as plain Markdown. Shared by initial load, navigation, and the
+        external-edit reload so all three stay diff-aware and consistent.
+        """
+        if looks_like_diff(text):
+            self._diff_files = parse_diff(text)
+            return diff_to_markdown(self._diff_files)
+        self._diff_files = None
+        return text
+
     async def _load_file(self, path: Path, anchor: str = "") -> bool:
         viewer = self.query_one(MarkdownViewer)
         try:
@@ -842,19 +859,7 @@ class MdViewerApp(App):
         self._md_path = path
         self._md_dir = path.parent
         self.title = path.name
-        # A .diff/.patch (or content that looks like a unified diff) renders
-        # delta-style: parse it, set the diff model, and feed the scaffolded
-        # Markdown to the renderer. Anything else is plain Markdown. The model
-        # must be set before `_render_source` runs because `_inject_diff_hunks`
-        # reads `self._diff_files`.
-        from mdview.diff import diff_to_markdown, looks_like_diff, parse_diff
-
-        if looks_like_diff(text):
-            self._diff_files = parse_diff(text)
-            await self._render_source(diff_to_markdown(self._diff_files))
-        else:
-            self._diff_files = None
-            await self._render_source(text)
+        await self._render_source(self._source_for(text))
         # Navigating to a new document starts a fresh edit session.
         self._disk_baseline = text
         self._undo_stack.clear()
