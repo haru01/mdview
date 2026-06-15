@@ -2590,3 +2590,43 @@ def test_watcher_started_for_file_not_for_stdin() -> None:
 
     with _tempfile.TemporaryDirectory() as d:
         asyncio.run(driver(Path(d)))
+
+
+def test_y_copies_selection_to_clipboard() -> None:
+    """`y` copies the current selection to the clipboard via OSC52."""
+    import asyncio
+
+    md = FIXTURES / "simple.md"
+
+    async def scenario() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("v")
+            await pilot.pause()
+            assert app.screen.get_selected_text(), "`v` should select a block"
+            await pilot.press("y")
+            await pilot.pause()
+            assert app.clipboard
+            assert app.clipboard.strip() != ""
+
+    asyncio.run(scenario())
+
+
+def test_y_without_selection_notifies_and_keeps_clipboard_empty() -> None:
+    """`y` with no selection notifies and leaves the clipboard empty."""
+    import asyncio
+
+    md = FIXTURES / "simple.md"
+
+    async def scenario() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("y")
+            await pilot.pause()
+            assert app.clipboard == ""
+
+    asyncio.run(scenario())

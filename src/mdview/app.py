@@ -190,6 +190,7 @@ class MdViewerApp(App):
         Binding("V", "shrink_selection", "Shrink sel", show=False),
         Binding("h", "ask_ai", "Ask AI", show=True),
         Binding("w", "edit_selection", "Edit sel", show=True),
+        Binding("y", "copy_selection", "Copy", show=True),
         # help
         Binding("question_mark", "help", "Help", show=True),
     ]
@@ -921,6 +922,14 @@ class MdViewerApp(App):
         # this only ever pushes when none is open.
         if not isinstance(self.screen, HelpScreen):
             self.push_screen(HelpScreen())
+
+    def action_copy_selection(self) -> None:
+        selection = self.screen.get_selected_text()
+        if not selection or not selection.strip():
+            self.notify("選択範囲がありません", severity="warning")
+            return
+        self.copy_to_clipboard(selection)
+        self.notify(f"{len(selection)} 文字をコピーしました")
 
     def action_ask_ai(self) -> None:
         selection = self.screen.get_selected_text()
