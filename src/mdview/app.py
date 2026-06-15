@@ -821,6 +821,20 @@ class MdViewerApp(App):
             return
         self.open_url(href)
 
+    def on_directory_tree_file_selected(
+        self, event: DirectoryTree.FileSelected
+    ) -> None:
+        # Route a file-tree selection through the same history-tracking
+        # navigation as link clicks, then drop focus back to the viewer so the
+        # reading/navigation keys (App bindings) work again.
+        event.stop()
+        path = Path(event.path)
+        if path.resolve() == self._md_path:
+            self.set_focus(None)
+            return
+        self.run_worker(self._navigate_to(path, ""), exclusive=True)
+        self.set_focus(None)
+
     def _resolve_md_link(self, href: str) -> tuple[Path, str] | None:
         raw_path, _, anchor = href.partition("#")
         if not raw_path:

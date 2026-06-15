@@ -2700,3 +2700,24 @@ def test_e_toggles_sidebar_visibility():
             assert not sidebar.display
 
     asyncio.run(scenario())
+
+
+def test_selecting_tree_file_switches_viewer():
+    import asyncio
+
+    async def scenario():
+        app = MdViewerApp(FIXTURES / "simple.md", root_dir=FIXTURES)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sidebar = app.query_one("#sidebar", DirectoryTree)
+            target = (FIXTURES / "sample.diff").resolve()
+            app.on_directory_tree_file_selected(
+                DirectoryTree.FileSelected(sidebar.root, target)
+            )
+            for _ in range(20):
+                await pilot.pause()
+                if app._md_path == target:
+                    break
+            assert app._md_path == target
+
+    asyncio.run(scenario())
