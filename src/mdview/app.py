@@ -842,7 +842,19 @@ class MdViewerApp(App):
         self._md_path = path
         self._md_dir = path.parent
         self.title = path.name
-        await self._render_source(text)
+        # A .diff/.patch (or content that looks like a unified diff) renders
+        # delta-style: parse it, set the diff model, and feed the scaffolded
+        # Markdown to the renderer. Anything else is plain Markdown. The model
+        # must be set before `_render_source` runs because `_inject_diff_hunks`
+        # reads `self._diff_files`.
+        from mdview.diff import diff_to_markdown, looks_like_diff, parse_diff
+
+        if looks_like_diff(text):
+            self._diff_files = parse_diff(text)
+            await self._render_source(diff_to_markdown(self._diff_files))
+        else:
+            self._diff_files = None
+            await self._render_source(text)
         # Navigating to a new document starts a fresh edit session.
         self._disk_baseline = text
         self._undo_stack.clear()

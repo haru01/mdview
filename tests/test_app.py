@@ -2630,3 +2630,20 @@ def test_y_without_selection_notifies_and_keeps_clipboard_empty() -> None:
             assert app.clipboard == ""
 
     asyncio.run(scenario())
+
+
+def test_load_file_renders_diff_as_hunks() -> None:
+    """Loading a .diff via _load_file renders delta-style hunks, not a code block."""
+    import asyncio
+
+    from mdview.diff_widget import DiffHunk
+
+    async def scenario() -> None:
+        app = MdViewerApp(FIXTURES / "simple.md")
+        async with app.run_test() as pilot:
+            await app._load_file(FIXTURES / "sample.diff")
+            await pilot.pause()
+            assert app.query(DiffHunk)
+            assert app._diff_files is not None
+
+    asyncio.run(scenario())
