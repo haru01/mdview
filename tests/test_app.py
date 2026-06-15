@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from textual.widgets import MarkdownViewer
+from textual.widgets import DirectoryTree, MarkdownViewer
 
 from mdview.app import MdViewerApp, _paragraph_image_src
 
@@ -2590,3 +2590,214 @@ def test_watcher_started_for_file_not_for_stdin() -> None:
 
     with _tempfile.TemporaryDirectory() as d:
         asyncio.run(driver(Path(d)))
+
+
+def test_y_copies_selection_to_clipboard() -> None:
+    """`y` copies the current selection to the clipboard via OSC52."""
+    import asyncio
+
+    md = FIXTURES / "simple.md"
+
+    async def scenario() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("v")
+            await pilot.pause()
+            assert app.screen.get_selected_text(), "`v` should select a block"
+            await pilot.press("y")
+            await pilot.pause()
+            assert app.clipboard
+            assert app.clipboard.strip() != ""
+
+    asyncio.run(scenario())
+
+
+def test_y_without_selection_notifies_and_keeps_clipboard_empty() -> None:
+    """`y` with no selection notifies and leaves the clipboard empty."""
+    import asyncio
+
+    md = FIXTURES / "simple.md"
+
+    async def scenario() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("y")
+            await pilot.pause()
+            assert app.clipboard == ""
+
+    asyncio.run(scenario())
+
+
+def test_load_file_renders_diff_as_hunks() -> None:
+    """Loading a .diff via _load_file renders delta-style hunks, not a code block."""
+    import asyncio
+
+    from mdview.diff_widget import DiffHunk
+
+    async def scenario() -> None:
+        app = MdViewerApp(FIXTURES / "simple.md")
+        async with app.run_test() as pilot:
+            await app._load_file(FIXTURES / "sample.diff")
+            await pilot.pause()
+            assert app.query(DiffHunk)
+            assert app._diff_files is not None
+
+    asyncio.run(scenario())
+
+
+def test_external_change_to_diff_file_keeps_delta_rendering(tmp_path) -> None:
+    """An external edit to a loaded diff file stays delta-rendered, not raw."""
+    import asyncio
+
+    from mdview.diff_widget import DiffHunk
+
+    async def scenario() -> None:
+        diff_a = (
+            "--- a/foo.py\n+++ b/foo.py\n@@ -1,2 +1,2 @@\n"
+            "-old line\n+new line\n unchanged\n"
+        )
+        diff_b = (
+            "--- a/foo.py\n+++ b/foo.py\n@@ -1,2 +1,2 @@\n"
+            "-old line\n+changed again\n unchanged\n"
+        )
+        diff_path = tmp_path / "x.diff"
+        diff_path.write_text(diff_a)
+        app = MdViewerApp(diff_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.query(DiffHunk)  # delta-rendered on initial load
+            assert app._diff_files is not None
+            diff_path.write_text(diff_b)  # external edit
+            await app._reload_from_disk()
+            await pilot.pause()
+            assert app.query(DiffHunk)  # STILL delta, not raw markdown
+            assert app._diff_files is not None
+
+    asyncio.run(scenario())
+
+
+def test_e_toggles_sidebar_visibility():
+    import asyncio
+
+    async def scenario():
+        app = MdViewerApp(FIXTURES / "simple.md")
+        async with app.run_test() as pilot:
+            # Single-file launch: the sidebar is not mounted until first opened
+            # (a DirectoryTree's resident loader worker would otherwise hang
+            # App.workers.wait_for_complete()).
+            assert not app.query("#sidebar")
+            await pilot.press("e")
+            await pilot.pause()
+            sidebar = app.query_one("#sidebar", DirectoryTree)
+            assert sidebar.display
+            assert app.focused is sidebar
+            await pilot.press("e")
+            await pilot.pause()
+            assert not sidebar.display
+
+    asyncio.run(scenario())
+
+
+def test_selecting_tree_file_switches_viewer():
+    import asyncio
+
+    async def scenario():
+        app = MdViewerApp(FIXTURES / "simple.md", root_dir=FIXTURES)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sidebar = app.query_one("#sidebar", DirectoryTree)
+            target = (FIXTURES / "sample.diff").resolve()
+            app.on_directory_tree_file_selected(
+                DirectoryTree.FileSelected(sidebar.root, target)
+            )
+            for _ in range(20):
+                await pilot.pause()
+                if app._md_path == target:
+                    break
+            assert app._md_path == target
+
+    asyncio.run(scenario())
+
+
+def test_directory_launch_shows_sidebar_and_opens_readme(tmp_path):
+    import asyncio
+    from mdview.filetree import initial_file
+
+    async def scenario():
+        (tmp_path / "README.md").write_text("# Readme\n\nbody\n")
+        (tmp_path / "other.md").write_text("# Other\n")
+        first = initial_file(tmp_path)
+        app = MdViewerApp(first, root_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sidebar = app.query_one("#sidebar", DirectoryTree)
+            assert sidebar.display
+            assert app._md_path == (tmp_path / "README.md").resolve()
+
+    asyncio.run(scenario())
+
+
+def test_empty_directory_launch_shows_placeholder(tmp_path):
+    import asyncio
+    from mdview.filetree import initial_file
+
+    async def scenario():
+        (tmp_path / "notes.txt").write_text("not markdown")
+        first = initial_file(tmp_path)  # None — no viewable file
+        app = MdViewerApp(first, root_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._md_path is None
+            assert app.query_one("#sidebar", DirectoryTree).display
+
+    asyncio.run(scenario())
+
+
+def test_write_with_no_file_open_is_safe(tmp_path):
+    import asyncio
+    from mdview.filetree import initial_file
+
+    async def scenario():
+        (tmp_path / "notes.txt").write_text("x")  # no viewable file
+        app = MdViewerApp(initial_file(tmp_path), root_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._md_path is None
+            ok = app._write_file()
+            await pilot.pause()
+            assert ok is False  # refused, no crash
+
+    asyncio.run(scenario())
+
+
+def test_back_after_opening_from_empty_dir_is_safe(tmp_path):
+    import asyncio
+    from mdview.filetree import initial_file
+
+    async def scenario():
+        (tmp_path / "notes.txt").write_text("x")
+        app = MdViewerApp(initial_file(tmp_path), root_dir=tmp_path)  # _md_path None
+        doc = tmp_path / "doc.md"
+        doc.write_text("# Doc\n\nbody\n")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._md_path is None
+            sidebar = app.query_one("#sidebar", DirectoryTree)
+            app.on_directory_tree_file_selected(
+                DirectoryTree.FileSelected(sidebar.root, doc.resolve())
+            )
+            for _ in range(20):
+                await pilot.pause()
+                if app._md_path == doc.resolve():
+                    break
+            assert app._md_path == doc.resolve()
+            assert app._history == []  # no (None, ...) entry recorded
+            app.action_go_back()  # must not crash
+            await pilot.pause()
+            await pilot.pause()
+
+    asyncio.run(scenario())

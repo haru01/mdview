@@ -26,7 +26,7 @@ from textual.geometry import Offset
 from textual.selection import SELECT_ALL, Selection
 from textual.timer import Timer
 from textual.widget import Widget
-from textual.widgets import Input, Label, Markdown, MarkdownViewer, Static
+from textual.widgets import DirectoryTree, Input, Label, Markdown, MarkdownViewer, Static
 from textual.widgets._markdown import (
     MarkdownBlock,
     MarkdownFence,
@@ -39,7 +39,7 @@ from textual_image.widget import Image
 from mdview.ai import AiQueryError, ask_claude, find_claude
 from mdview.ask_ai import AskAiScreen
 from mdview.command import parse_command
-from mdview.diff import FileDiff, parse_hunk_lines
+from mdview.diff import FileDiff, diff_to_markdown, looks_like_diff, parse_diff, parse_hunk_lines
 from mdview.diff_preview import DiffPreviewScreen
 from mdview.diff_widget import DiffHunk
 from mdview.diffview import render_hunk
@@ -47,6 +47,7 @@ from mdview.edit_apply import replace_line_range, selection_block_range
 from mdview.edit_input import EditInstructionScreen
 from mdview.eventflow import parse_flow_dsl
 from mdview.eventflow_widget import EventFlow
+from mdview.filetree import is_viewable
 from mdview.help import HelpScreen
 from mdview.image_zoom import ZoomableImage
 from mdview.mermaid import MermaidRenderError, find_mmdc, render_mermaid
@@ -123,6 +124,18 @@ class _MdViewer(MarkdownViewer):
         message.prevent_default()
 
 
+class _MdTree(DirectoryTree):
+    """DirectoryTree filtered to viewable files (Markdown/diff) and dirs.
+
+    Directories are always kept so the tree can be navigated; files are kept
+    only when the viewer can render them (so the sidebar lists openable files,
+    not every artifact in the tree).
+    """
+
+    def filter_paths(self, paths):
+        return [p for p in paths if p.is_dir() or is_viewable(p)]
+
+
 class _CommandLine(Input):
     """The unified `/`-search / `:`-command line (less/vim-style).
 
@@ -190,6 +203,8 @@ class MdViewerApp(App):
         Binding("V", "shrink_selection", "Shrink sel", show=False),
         Binding("h", "ask_ai", "Ask AI", show=True),
         Binding("w", "edit_selection", "Edit sel", show=True),
+        Binding("y", "copy_selection", "Copy", show=True),
+        Binding("e", "toggle_sidebar", "Files", show=True),
         # help
         Binding("question_mark", "help", "Help", show=True),
     ]
@@ -201,8 +216,13 @@ class MdViewerApp(App):
         content: str | None = None,
         base_dir: Path | None = None,
         diff_files: list[FileDiff] | None = None,
+        root_dir: Path | None = None,
     ) -> None:
         super().__init__()
+        # Directory the file-tree sidebar is rooted at. When given on launch
+        # (`mdview <dir>`) the sidebar starts visible; otherwise it defaults to
+        # the viewed file's parent and starts hidden (toggle with `e`).
+        self._root_dir = root_dir.resolve() if root_dir is not None else None
         self._history: list[tuple[Path, float]] = []
         # Parsed diff model when the document is a whole unified diff; used by
         # `_inject_diff_hunks` to render each ```diff placeholder fence as a
@@ -281,14 +301,31 @@ class MdViewerApp(App):
             self._md_dir = (base_dir or Path.cwd()).resolve()
             self._display_name = "(stdin)"
         else:
-            self._md_path = md_path.resolve()
-            self._md_dir = self._md_path.parent
-            self._display_name = self._md_path.name
+            if md_path is None:
+                # Directory launch with no viewable file: no document yet, the
+                # sidebar is the only content until the user picks a file.
+                self._md_path = None
+                self._md_dir = self._root_dir or Path.cwd()
+                self._display_name = "(no file)"
+            else:
+                self._md_path = md_path.resolve()
+                self._md_dir = self._md_path.parent
+                self._display_name = self._md_path.name
 
     def compose(self) -> ComposeResult:
-        # open_links=False so we route anchors (#section) to goto_anchor
-        # ourselves instead of letting Textual hand them to the OS browser.
-        yield _MdViewer(show_table_of_contents=False, open_links=False)
+        # The viewer lives in a horizontal row; the file-tree sidebar is mounted
+        # into this row *lazily* (left of the viewer) the first time it's shown
+        # — see `_ensure_sidebar`. A `DirectoryTree` runs a resident
+        # directory-loader worker that never completes, which would hang
+        # `App.workers.wait_for_complete()` (the same trap the file-watch task
+        # avoids); keeping the tree out of the DOM until the user opens it
+        # preserves that invariant for the common single-file case. Only the
+        # viewer is wrapped in the row (not the cmdline-bar) so it stays
+        # uniquely queryable.
+        with Horizontal(id="main-row"):
+            # open_links=False so we route anchors (#section) to goto_anchor
+            # ourselves instead of letting Textual hand them to the OS browser.
+            yield _MdViewer(show_table_of_contents=False, open_links=False)
         # The unified command line, docked at the bottom and hidden until `/` or
         # `:` (theme.css sets `display: none`; action_search/action_command flip
         # it on). less/vim-style: one editable field whose leading `/` or `:`
@@ -304,14 +341,30 @@ class MdViewerApp(App):
 
     async def on_mount(self) -> None:
         self.title = self._display_name
+        if self._md_path is None:
+            # Empty directory launch: nothing to render yet — show the sidebar
+            # and prompt the user to choose a file.
+            tree = await self._ensure_sidebar()
+            tree.focus()
+            self.notify("左のツリーからファイルを選択してください")
+            return
         try:
             text = self._md_path.read_text(encoding="utf-8")
         except OSError as e:
             self.exit(message=f"mdview: failed to load {self._md_path}: {e}")
             return
-        await self._render_source(text)
+        # A pre-supplied diff model (the CLI diff path) means `text` is already
+        # the scaffolded Markdown — render as-is. Otherwise detect a diff from the
+        # raw text so `mdview x.diff` renders delta-style too.
+        source = text if self._diff_files is not None else self._source_for(text)
+        await self._render_source(source)
         self._disk_baseline = text
         self._start_watching()
+        # A directory launch (`mdview <dir>`) opens with the sidebar showing and
+        # focused so the file tree is ready to navigate.
+        if self._root_dir is not None:
+            tree = await self._ensure_sidebar()
+            tree.focus()
 
     async def _inject_images(self) -> None:
         viewer = self.query_one(MarkdownViewer)
@@ -714,12 +767,11 @@ class MdViewerApp(App):
         except OSError as e:
             self.notify(f"再読み込みに失敗しました: {e}", severity="error")
             return
-        viewer = self.query_one(MarkdownViewer)
-        if text == viewer.document.source:
+        if text == self._disk_baseline:
             self._disk_baseline = text
             return
         was_dirty = self._is_dirty()
-        await self._rerender_preserving_scroll(text)
+        await self._rerender_preserving_scroll(self._source_for(text))
         self._disk_baseline = text
         self._undo_stack.clear()
         if was_dirty:
@@ -783,6 +835,20 @@ class MdViewerApp(App):
             return
         self.open_url(href)
 
+    def on_directory_tree_file_selected(
+        self, event: DirectoryTree.FileSelected
+    ) -> None:
+        # Route a file-tree selection through the same history-tracking
+        # navigation as link clicks, then drop focus back to the viewer so the
+        # reading/navigation keys (App bindings) work again.
+        event.stop()
+        path = Path(event.path)
+        if path.resolve() == self._md_path:
+            self.set_focus(None)
+            return
+        self.run_worker(self._navigate_to(path, ""), exclusive=True)
+        self.set_focus(None)
+
     def _resolve_md_link(self, href: str) -> tuple[Path, str] | None:
         raw_path, _, anchor = href.partition("#")
         if not raw_path:
@@ -808,7 +874,8 @@ class MdViewerApp(App):
         # pointing at the file the user is still viewing.
         prev = (self._md_path, viewer.scroll_y)
         if await self._load_file(path, anchor):
-            self._history.append(prev)
+            if prev[0] is not None:
+                self._history.append(prev)
 
     async def _render_source(self, text: str) -> None:
         """(Re)render *text* into the viewer and re-run the enhancement passes.
@@ -831,6 +898,20 @@ class MdViewerApp(App):
         await self._inject_event_flows()
         await self._inject_section_insights()
 
+    def _source_for(self, text: str) -> str:
+        """Return the source to render for raw file *text*, updating `_diff_files`.
+
+        A unified diff is scaffolded to delta-style Markdown (and the parsed
+        model stashed on `_diff_files` for `_inject_diff_hunks`); anything else
+        renders as plain Markdown. Shared by initial load, navigation, and the
+        external-edit reload so all three stay diff-aware and consistent.
+        """
+        if looks_like_diff(text):
+            self._diff_files = parse_diff(text)
+            return diff_to_markdown(self._diff_files)
+        self._diff_files = None
+        return text
+
     async def _load_file(self, path: Path, anchor: str = "") -> bool:
         viewer = self.query_one(MarkdownViewer)
         try:
@@ -841,7 +922,7 @@ class MdViewerApp(App):
         self._md_path = path
         self._md_dir = path.parent
         self.title = path.name
-        await self._render_source(text)
+        await self._render_source(self._source_for(text))
         # Navigating to a new document starts a fresh edit session.
         self._disk_baseline = text
         self._undo_stack.clear()
@@ -922,6 +1003,14 @@ class MdViewerApp(App):
         if not isinstance(self.screen, HelpScreen):
             self.push_screen(HelpScreen())
 
+    def action_copy_selection(self) -> None:
+        selection = self.screen.get_selected_text()
+        if not selection or not selection.strip():
+            self.notify("選択範囲がありません", severity="warning")
+            return
+        self.copy_to_clipboard(selection)
+        self.notify(f"{len(selection)} 文字をコピーしました")
+
     def action_ask_ai(self) -> None:
         selection = self.screen.get_selected_text()
         if not selection or not selection.strip():
@@ -941,6 +1030,43 @@ class MdViewerApp(App):
                 tmpdir=Path(self._tempdir.name),
             )
         )
+
+    async def _ensure_sidebar(self) -> _MdTree:
+        """Mount the file-tree sidebar on first use and return it.
+
+        Mounted lazily (left of the viewer in `#main-row`) because a
+        `DirectoryTree` runs a never-completing directory-loader worker; keeping
+        it unmounted until the user opens it preserves
+        `App.workers.wait_for_complete()` for the common single-file case.
+        """
+        existing = self.query("#sidebar")
+        if existing:
+            return existing.first(_MdTree)
+        root = self._root_dir or self._md_dir
+        tree = _MdTree(str(root), id="sidebar")
+        row = self.query_one("#main-row", Horizontal)
+        await row.mount(tree, before=row.query_one(_MdViewer))
+        return tree
+
+    async def action_toggle_sidebar(self) -> None:
+        # Toggle the file-tree sidebar; focus it when showing (so j/k navigate
+        # the tree) and return focus to nothing when hiding (the viewer's keys
+        # work off App bindings, not a focused widget). The tree is mounted on
+        # first open and thereafter just display-toggled — can_focus tracks
+        # display so a hidden tree can't steal the App's keyboard focus.
+        existing = self.query("#sidebar")
+        if not existing:
+            tree = await self._ensure_sidebar()
+            tree.focus()
+            return
+        sidebar = existing.first(_MdTree)
+        show = not sidebar.display
+        sidebar.display = show
+        sidebar.can_focus = show
+        if show:
+            sidebar.focus()
+        else:
+            self.set_focus(None)
 
     def action_open_toc(self) -> None:
         # The TOC opens as a wide centered modal (TocScreen) rather than the
@@ -1120,6 +1246,9 @@ class MdViewerApp(App):
             self.notify(
                 "標準入力から開いた文書は保存できません (:q! で終了)", severity="warning"
             )
+            return False
+        if self._md_path is None:
+            self.notify("ファイルが開かれていません", severity="warning")
             return False
         source = self.query_one(MarkdownViewer).document.source
         try:
