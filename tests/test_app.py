@@ -2755,3 +2755,49 @@ def test_empty_directory_launch_shows_placeholder(tmp_path):
             assert app.query_one("#sidebar", DirectoryTree).display
 
     asyncio.run(scenario())
+
+
+def test_write_with_no_file_open_is_safe(tmp_path):
+    import asyncio
+    from mdview.filetree import initial_file
+
+    async def scenario():
+        (tmp_path / "notes.txt").write_text("x")  # no viewable file
+        app = MdViewerApp(initial_file(tmp_path), root_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._md_path is None
+            ok = app._write_file()
+            await pilot.pause()
+            assert ok is False  # refused, no crash
+
+    asyncio.run(scenario())
+
+
+def test_back_after_opening_from_empty_dir_is_safe(tmp_path):
+    import asyncio
+    from mdview.filetree import initial_file
+
+    async def scenario():
+        (tmp_path / "notes.txt").write_text("x")
+        app = MdViewerApp(initial_file(tmp_path), root_dir=tmp_path)  # _md_path None
+        doc = tmp_path / "doc.md"
+        doc.write_text("# Doc\n\nbody\n")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._md_path is None
+            sidebar = app.query_one("#sidebar", DirectoryTree)
+            app.on_directory_tree_file_selected(
+                DirectoryTree.FileSelected(sidebar.root, doc.resolve())
+            )
+            for _ in range(20):
+                await pilot.pause()
+                if app._md_path == doc.resolve():
+                    break
+            assert app._md_path == doc.resolve()
+            assert app._history == []  # no (None, ...) entry recorded
+            app.action_go_back()  # must not crash
+            await pilot.pause()
+            await pilot.pause()
+
+    asyncio.run(scenario())

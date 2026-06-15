@@ -874,7 +874,8 @@ class MdViewerApp(App):
         # pointing at the file the user is still viewing.
         prev = (self._md_path, viewer.scroll_y)
         if await self._load_file(path, anchor):
-            self._history.append(prev)
+            if prev[0] is not None:
+                self._history.append(prev)
 
     async def _render_source(self, text: str) -> None:
         """(Re)render *text* into the viewer and re-run the enhancement passes.
@@ -1245,6 +1246,9 @@ class MdViewerApp(App):
             self.notify(
                 "標準入力から開いた文書は保存できません (:q! で終了)", severity="warning"
             )
+            return False
+        if self._md_path is None:
+            self.notify("ファイルが開かれていません", severity="warning")
             return False
         source = self.query_one(MarkdownViewer).document.source
         try:
