@@ -10,13 +10,51 @@ if TYPE_CHECKING:
     from mdview.diff import FileDiff
 
 
-def main() -> None:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mdview",
         description="Readable TUI markdown viewer with SVG image rendering.",
     )
-    parser.add_argument("file", type=Path, help="markdown file path, or - for stdin")
+    parser.add_argument(
+        "file", nargs="?", type=Path, help="markdown file path, or - for stdin"
+    )
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--diff",
+        nargs="?",
+        const="",
+        metavar="REF",
+        help="show `git diff [REF]` (no REF = working tree)",
+    )
+    group.add_argument(
+        "--staged", action="store_true", help="show `git diff --cached`"
+    )
+    group.add_argument(
+        "--pr",
+        nargs="?",
+        const="",
+        metavar="N",
+        help="show a PR diff via `gh pr diff [N]` (no N = current branch)",
+    )
+    return parser
+
+
+def main() -> None:
+    parser = _build_parser()
     args = parser.parse_args()
+
+    # `--diff`/`--staged`/`--pr`: run the diff command ourselves and view its
+    # output, so no manual `git diff | mdview -` pipe is needed.
+    source = _resolve_source(args)
+    if source is not None:
+        if args.file is not None:
+            parser.error(
+                "--diff/--staged/--pr cannot be combined with a file argument"
+            )
+        _run_source(*source)
+        return
+    if args.file is None:
+        parser.error("a file, - (stdin), or one of --diff/--staged/--pr is required")
 
     path: Path = args.file
     if str(path) == "-":
@@ -75,18 +113,51 @@ def _diff_files_for_path(path: Path) -> list[FileDiff] | None:
     return parse_diff(text) if looks_like_diff(text) else None
 
 
+def _resolve_source(args: argparse.Namespace) -> tuple[str, str | None] | None:
+    """Map the `--diff`/`--staged`/`--pr` flags to a (source, ref) pair, or None."""
+    if args.diff is not None:
+        return ("working", args.diff or None)  # "" → None (working tree), else a ref
+    if args.staged:
+        return ("staged", None)
+    if args.pr is not None:
+        return ("pr", args.pr or None)  # "" → None (current branch), else a PR number
+    return None
+
+
+def _run_source(source: str, ref: str | None) -> None:
+    from mdview.diffsource import DiffSourceError, capture_diff
+
+    try:
+        text = capture_diff(source, ref)
+    except DiffSourceError as e:
+        print(f"mdview: {e}", file=sys.stderr)
+        sys.exit(1)
+    if not text.strip():
+        print("mdview: no changes to show", file=sys.stderr)
+        return
+    # Launched from a terminal, so stdin is already the tty — no reattach needed.
+    _view_captured(text, reattach=False)
+
+
 def _run_stdin() -> None:
+    # A raw diff (e.g. `gh pr diff | mdview -`) is parsed and rendered delta-like;
+    # plain Markdown passes through unchanged. stdin is the now-consumed pipe, so
+    # the TUI path needs the controlling tty re-pointed onto fd 0.
+    _view_captured(sys.stdin.read(), reattach=True)
+
+
+def _view_captured(text: str, *, reattach: bool) -> None:
+    """Detect a diff in *text* and view it (TUI) or render it (non-TTY stdout).
+
+    When *reattach* is True (stdin path) and a terminal is present, fd 0 is
+    re-pointed at /dev/tty so the TUI can read keys; the flag path passes False
+    because it runs from a terminal where stdin is already the tty.
+    """
     from mdview.diff import looks_like_diff, parse_diff
 
-    # A raw diff (e.g. `gh pr diff | mdview -`) is parsed and rendered delta-like;
-    # plain Markdown passes through unchanged.
-    text = sys.stdin.read()
     files = parse_diff(text) if looks_like_diff(text) else None
 
-    # When output is going to a real terminal, point stdin at the controlling
-    # tty (stdin itself is the now-consumed pipe) so the TUI can read keys.
-    # Otherwise just emit rendered text, matching the file-path pipe behavior.
-    if sys.stdout.isatty() and _reattach_tty():
+    if sys.stdout.isatty() and (not reattach or _reattach_tty()):
         from mdview.app import MdViewerApp
 
         if files is not None:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from mdview.diff import diff_to_markdown, looks_like_diff, parse_diff, parse_hunk_lines
 
 _BASIC = (
@@ -252,3 +254,43 @@ def test_cli_passes_through_markdown_file(tmp_path) -> None:
     path = tmp_path / "doc.md"
     path.write_text("# Title\n\nbody\n", encoding="utf-8")
     assert _diff_files_for_path(path) is None
+
+
+# --- --diff/--staged/--pr flag resolution -----------------------------------
+
+
+def _resolve(argv):
+    from mdview.cli import _build_parser, _resolve_source
+
+    return _resolve_source(_build_parser().parse_args(argv))
+
+
+def test_resolve_source_none_without_flags() -> None:
+    assert _resolve(["doc.md"]) is None
+
+
+def test_resolve_source_diff_working_tree() -> None:
+    assert _resolve(["--diff"]) == ("working", None)
+
+
+def test_resolve_source_diff_with_ref() -> None:
+    assert _resolve(["--diff", "main"]) == ("working", "main")
+
+
+def test_resolve_source_staged() -> None:
+    assert _resolve(["--staged"]) == ("staged", None)
+
+
+def test_resolve_source_pr_current_branch() -> None:
+    assert _resolve(["--pr"]) == ("pr", None)
+
+
+def test_resolve_source_pr_with_number() -> None:
+    assert _resolve(["--pr", "123"]) == ("pr", "123")
+
+
+def test_mutually_exclusive_flags_rejected() -> None:
+    from mdview.cli import _build_parser
+
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(["--diff", "--staged"])
