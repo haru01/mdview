@@ -217,6 +217,33 @@ TocScreen {
     height: 1fr;
 }
 
+/* ===== Quick-open fuzzy finder (Ctrl+P / :e) ===== */
+
+QuickOpenScreen {
+    align: center middle;
+    background: $surface 60%;
+}
+
+#quick-open-dialog {
+    width: 80%;
+    height: 60%;
+    background: $panel;
+    border: round $orange;
+    padding: 1 2;
+}
+
+#quick-open-input {
+    border: none;
+    background: $boost;
+    margin: 0 0 1 0;
+}
+
+#quick-open-list {
+    width: 1fr;
+    height: 1fr;
+    background: $panel;
+}
+
 /* ===== Help modal =====
  * `?` / `:h` open a centered cheat-sheet of the key map (see help.py).
  */
