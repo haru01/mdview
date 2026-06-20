@@ -166,8 +166,8 @@ class _CommandLine(Input):
 class MdViewerApp(App):
     CSS_PATH = "theme.css"
 
-    # We bind Ctrl+P to our own quick-open fuzzy finder; disable Textual's
-    # built-in command palette (unused here) so it doesn't claim the key.
+    # Disable Textual's built-in command palette (Ctrl+P) — unused here, and we
+    # don't want Ctrl+P opening it. Our quick-open finder is Ctrl+O / `:e`.
     ENABLE_COMMAND_PALETTE = False
 
     # less/delta-style key map. Esc is `cancel` (never quit); quitting is `q` or
@@ -221,7 +221,7 @@ class MdViewerApp(App):
         Binding("y", "copy_selection", "Copy", show=True),
         Binding("e", "toggle_sidebar", "Files", show=True),
         # quick-open fuzzy finder (also `:e`/`:open`)
-        Binding("ctrl+p", "quick_open", "Open file", show=True),
+        Binding("ctrl+o", "quick_open", "Open file", show=True),
         # help
         Binding("question_mark", "help", "Help", show=True),
     ]
@@ -381,11 +381,12 @@ class MdViewerApp(App):
         await self._render_source(source)
         self._disk_baseline = text
         self._start_watching()
-        # A directory launch (`mdview <dir>`) opens with the sidebar showing and
-        # focused so the file tree is ready to navigate.
+        # A directory launch (`mdview <dir>`) renders the initial file (README)
+        # and immediately opens the quick-open palette — preselected to that file
+        # — so picking what to read is the first move. The tree stays hidden
+        # (toggle with `e`); Esc closes the palette and leaves README on screen.
         if self._root_dir is not None:
-            tree = await self._ensure_sidebar()
-            tree.focus()
+            self.action_quick_open()
 
     async def _inject_images(self) -> None:
         viewer = self.query_one(MarkdownViewer)
@@ -744,12 +745,12 @@ class MdViewerApp(App):
     def _start_watching(self) -> None:
         """(Re)start the resident task watching the viewed file for external
         edits. Called on load and on every navigation so it tracks the *current*
-        `_md_path`; the old task is cancelled first. stdin has no real file, so
-        it is not watched."""
+        `_md_path`; the old task is cancelled first. An ephemeral view (stdin /
+        captured diff) has no real file, so it is not watched."""
         if self._watch_task is not None:
             self._watch_task.cancel()
             self._watch_task = None
-        if self._display_name == "(stdin)" or self._transient_view:
+        if self._is_ephemeral():
             return
         # Pass the dir/path as args so the task watches a fixed snapshot; a later
         # navigation cancels this task and starts a fresh one.
@@ -1133,7 +1134,10 @@ class MdViewerApp(App):
         root = self._root_dir or self._md_dir
         files = list_viewable_files(root)
         entries = build_entries(root, files, include_diffs=is_git_repo(root))
-        self.push_screen(QuickOpenScreen(entries), self._on_quick_open_picked)
+        self.push_screen(
+            QuickOpenScreen(entries, current=self._md_path),
+            self._on_quick_open_picked,
+        )
 
     def _on_quick_open_picked(self, payload: object) -> None:
         # Esc/empty pick → None. A DiffSource captures and renders git/gh output;
@@ -1343,6 +1347,11 @@ class MdViewerApp(App):
         """Whether the live buffer differs from what's on disk (`:w` baseline)."""
         return self.query_one(MarkdownViewer).document.source != self._disk_baseline
 
+    def _is_ephemeral(self) -> bool:
+        """Whether the current view has no real file behind it — stdin or a
+        captured-diff transient view — so it can't be watched or written back."""
+        return self._display_name == "(stdin)" or self._transient_view
+
     def action_quit(self) -> None:
         """Quit, but guard against discarding unsaved AI edits (`:q!` forces it)."""
         if self._is_dirty():
@@ -1359,7 +1368,7 @@ class MdViewerApp(App):
         refused. On an OS error the buffer stays dirty (so the quit guard still
         fires and the user isn't misled into thinking it saved).
         """
-        if self._display_name == "(stdin)" or self._transient_view:
+        if self._is_ephemeral():
             self.notify(
                 "このビューは保存できません (:q! で終了)", severity="warning"
             )
