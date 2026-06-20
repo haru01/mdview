@@ -74,9 +74,12 @@ _INSIGHT_MAX_CONCURRENT = 3
 _INSIGHT_QUESTION = "このセクションの内容を、図解のSVGを交えてわかりやすく解説してください。"
 # When the document is a diff, each `## @ file` heading's section is that file's
 # unified diff, so the prose prompt doesn't fit — ask about the *change* instead.
+# Every diff explanation covers the same four points so they read consistently:
+# an SVG illustration, what changed, what it means, and review feedback.
 _DIFF_INSIGHT_QUESTION = (
-    "この差分（diff）の変更内容を、図解のSVGを交えてわかりやすく解説してください。"
-    "何がどう変わったのか、その変更が何を意味するのかを説明してください。"
+    "この差分（diff）を、図解のSVGを交えて解説してください。"
+    "何がどう変わったか、その変更が何を意味するか、"
+    "そしてレビュー観点でのフィードバック（気になる点・改善提案）も述べてください。"
 )
 # An SVG-illustrated section explanation can take longer than the Ask AI default,
 # so allow more time; `concise_svg` keeps the diagram simple to stay within it.

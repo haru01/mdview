@@ -53,6 +53,12 @@ cat notes.md | mdview -     # stdin から読み込む
 gh pr view 123 | mdview -   # 他コマンドの出力をそのまま表示
 gh pr diff 123 | mdview -   # diff を色分け・見出し付きで表示（後述）
 mdview file.md | less       # 非 TTY 出力時は整形テキストを出力
+
+mdview --diff               # `git diff`（作業ツリー）をパイプなしで表示
+mdview --diff main          # `git diff main`（任意の ref との差分）
+mdview --staged             # `git diff --cached`（ステージ済み）
+mdview --pr                 # 現在ブランチの PR diff（`gh pr diff`）
+mdview --pr 123             # 番号指定の PR diff（`gh pr diff 123`）
 ```
 
 stdin 入力時、相対パスの画像・リンクはカレントディレクトリ（CWD）を基準に解決します。
@@ -119,6 +125,18 @@ stdin 入力時、相対パスの画像・リンクはカレントディレク�
 ```sh
 gh pr diff 123 | mdview -
 ```
+
+パイプを打つ代わりに、`mdview` 自身に diff を取らせるフラグも使えます（出力は上と同じ delta 表示。非 TTY 出力時は整形テキスト）:
+
+```sh
+mdview --diff          # git diff（作業ツリー）
+mdview --diff main     # git diff main（任意の ref との差分）
+mdview --staged        # git diff --cached（ステージ済み）
+mdview --pr            # 現在ブランチの PR（gh pr diff）
+mdview --pr 123        # 番号指定の PR（gh pr diff 123）
+```
+
+`git` / `gh` が無い・git リポジトリ外・対象 PR が無い場合は、その理由を `mdview: …` として表示して終了します。
 
 `n` / `p` でファイル・`@@` ハンク単位に素早く移動でき、`t`（ポップアップ目次）は diff のアウトラインになります。`.diff` / `.patch` ファイルを直接開いた場合も同様に表示されます。
 
