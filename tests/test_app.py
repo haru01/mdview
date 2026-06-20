@@ -191,6 +191,274 @@ def test_accent_palette_is_orange_and_green() -> None:
     asyncio.run(driver())
 
 
+def test_ctrl_p_opens_quick_open_and_enter_navigates(tmp_path) -> None:
+    """Ctrl+P opens the fuzzy finder; typing filters; Enter opens the file."""
+    import asyncio
+
+    from mdview.quick_open import QuickOpenScreen
+
+    (tmp_path / "README.md").write_text("# Readme\n")
+    (tmp_path / "guide.md").write_text("# Guide\n")
+
+    async def driver() -> None:
+        app = MdViewerApp(tmp_path / "README.md", root_dir=tmp_path)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+
+            await pilot.press("ctrl+o")
+            await pilot.pause()
+            assert isinstance(app.screen, QuickOpenScreen)
+
+            for ch in "guide":
+                await pilot.press(ch)
+            await pilot.pause()
+
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.pause()
+
+            assert not isinstance(app.screen, QuickOpenScreen)
+            assert app._md_path == (tmp_path / "guide.md").resolve()
+
+    asyncio.run(driver())
+
+
+def test_quick_open_lists_diff_sources_only_in_git_repo(tmp_path) -> None:
+    """The palette offers the git/gh diff sources only inside a git repo."""
+    import asyncio
+
+    from textual.widgets import OptionList
+
+    (tmp_path / "README.md").write_text("# r\n")
+
+    async def options_for(root: Path) -> list[str]:
+        app = MdViewerApp(root / "README.md", root_dir=root)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("ctrl+o")
+            await pilot.pause()
+            ol = app.screen.query_one("#quick-open-list", OptionList)
+            return [str(ol.get_option_at_index(i).prompt) for i in range(ol.option_count)]
+
+    async def driver() -> None:
+        # No .git → files only.
+        assert "git diff" not in await options_for(tmp_path)
+        # With .git → diff sources appear.
+        (tmp_path / ".git").mkdir()
+        opts = await options_for(tmp_path)
+        assert "git diff" in opts
+        assert "gh pr diff" in opts
+
+    asyncio.run(driver())
+
+
+def test_quick_open_diff_source_renders_captured_diff(tmp_path, monkeypatch) -> None:
+    """Selecting a diff source captures the diff and renders it delta-style."""
+    import asyncio
+
+    import mdview.diffsource as diffsource
+    from textual.widgets import OptionList
+    from mdview.diff_widget import DiffHunk
+
+    (tmp_path / "README.md").write_text("# r\n")
+    (tmp_path / ".git").mkdir()
+    sample = (FIXTURES / "sample.diff").read_text()
+    monkeypatch.setattr(diffsource, "capture_diff", lambda source, ref: sample)
+
+    async def driver() -> None:
+        app = MdViewerApp(tmp_path / "README.md", root_dir=tmp_path)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+
+            await pilot.press("ctrl+o")
+            await pilot.pause()
+            for ch in "gitdiff":
+                await pilot.press(ch)
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.pause()
+
+            # The captured diff is shown delta-style and marked transient.
+            assert list(app.query(DiffHunk)), "expected a DiffHunk from the captured diff"
+            assert app._transient_view
+            assert not app._is_dirty()  # nothing to save back to
+
+    asyncio.run(driver())
+
+
+def test_opening_md_after_diff_clears_diff_widgets(tmp_path, monkeypatch) -> None:
+    """After viewing a captured diff, opening an md must drop the diff widgets.
+
+    `Markdown.update` only removes MarkdownBlocks, so injected DiffHunk widgets
+    would orphan and stay on screen — making the md look like it never opened.
+    """
+    import asyncio
+
+    import mdview.diffsource as diffsource
+    from textual.widgets._markdown import MarkdownParagraph
+    from mdview.diff_widget import DiffHunk
+
+    (tmp_path / "README.md").write_text("# Readme\n\nbody paragraph\n")
+    (tmp_path / ".git").mkdir()
+    sample = (FIXTURES / "sample.diff").read_text()
+    monkeypatch.setattr(diffsource, "capture_diff", lambda source, ref: sample)
+
+    async def driver() -> None:
+        app = MdViewerApp(tmp_path / "README.md", root_dir=tmp_path)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+
+            # Open the git diff.
+            await pilot.press("ctrl+o")
+            await pilot.pause()
+            for ch in "gitdiff":
+                await pilot.press(ch)
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.pause()
+            assert list(app.query(DiffHunk)), "diff should be showing"
+
+            # Now open the markdown file.
+            await pilot.press("ctrl+o")
+            await pilot.pause()
+            for ch in "readme":
+                await pilot.press(ch)
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.pause()
+
+            assert app._md_path == (tmp_path / "README.md").resolve()
+            assert not list(app.query(DiffHunk)), "stale diff widgets must be gone"
+            assert list(app.query(MarkdownParagraph)), "markdown should render"
+
+    asyncio.run(driver())
+
+
+def test_quick_open_empty_diff_shows_notice(tmp_path, monkeypatch) -> None:
+    """An empty diff leaves the current view in place with a notice."""
+    import asyncio
+
+    import mdview.diffsource as diffsource
+    from mdview.diff_widget import DiffHunk
+
+    (tmp_path / "README.md").write_text("# r\n")
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(diffsource, "capture_diff", lambda source, ref: "\n")
+
+    async def driver() -> None:
+        app = MdViewerApp(tmp_path / "README.md", root_dir=tmp_path)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            before = app._md_path
+
+            await pilot.press("ctrl+o")
+            await pilot.pause()
+            for ch in "gitdiff":
+                await pilot.press(ch)
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.pause()
+
+            assert not list(app.query(DiffHunk))
+            assert app._md_path == before
+            assert not app._transient_view
+
+    asyncio.run(driver())
+
+
+def test_quick_open_arrow_moves_highlight_while_typing(tmp_path) -> None:
+    """↓ moves the OptionList highlight even though the Input keeps focus."""
+    import asyncio
+
+    from textual.widgets import OptionList
+
+    (tmp_path / "alpha.md").write_text("a")
+    (tmp_path / "beta.md").write_text("b")
+    (tmp_path / "gamma.md").write_text("c")
+
+    async def driver() -> None:
+        # No root_dir → single-file launch (no auto-opened palette); the doc's
+        # own dir is the enumeration root, so Ctrl+P still finds the siblings.
+        app = MdViewerApp(tmp_path / "alpha.md")
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+
+            await pilot.press("ctrl+o")
+            await pilot.pause()
+            option_list = app.screen.query_one("#quick-open-list", OptionList)
+            assert option_list.highlighted == 0
+
+            await pilot.press("down")
+            await pilot.pause()
+            assert option_list.highlighted == 1
+
+            await pilot.press("up")
+            await pilot.pause()
+            assert option_list.highlighted == 0
+
+    asyncio.run(driver())
+
+
+def test_colon_e_command_opens_quick_open(tmp_path) -> None:
+    """`:e` (via the command line) opens the same fuzzy finder as Ctrl+P."""
+    import asyncio
+
+    from mdview.quick_open import QuickOpenScreen
+
+    (tmp_path / "README.md").write_text("# Readme\n")
+
+    async def driver() -> None:
+        # No root_dir → no auto-opened palette, so `:e` is what opens it here.
+        app = MdViewerApp(tmp_path / "README.md")
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+
+            await pilot.press("colon")
+            await pilot.pause()
+            await pilot.press("e")
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert isinstance(app.screen, QuickOpenScreen)
+
+    asyncio.run(driver())
+
+
+def test_quick_open_escape_keeps_current_file(tmp_path) -> None:
+    """Esc dismisses the fuzzy finder without navigating."""
+    import asyncio
+
+    (tmp_path / "README.md").write_text("# Readme\n")
+    (tmp_path / "guide.md").write_text("# Guide\n")
+
+    async def driver() -> None:
+        app = MdViewerApp(tmp_path / "README.md", root_dir=tmp_path)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            before = app._md_path
+
+            await pilot.press("ctrl+o")
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert app._md_path == before
+
+    asyncio.run(driver())
+
+
 def test_brackets_navigate_between_headings() -> None:
     import asyncio
 
@@ -2821,6 +3089,10 @@ def test_selecting_tree_file_switches_viewer():
         app = MdViewerApp(FIXTURES / "simple.md", root_dir=FIXTURES)
         async with app.run_test() as pilot:
             await pilot.pause()
+            await pilot.pause()
+            await pilot.press("escape")  # close the auto-opened quick-open palette
+            await pilot.press("e")  # open the file-tree sidebar
+            await pilot.pause()
             sidebar = app.query_one("#sidebar", DirectoryTree)
             target = (FIXTURES / "sample.diff").resolve()
             app.on_directory_tree_file_selected(
@@ -2835,9 +3107,13 @@ def test_selecting_tree_file_switches_viewer():
     asyncio.run(scenario())
 
 
-def test_directory_launch_shows_sidebar_and_opens_readme(tmp_path):
+def test_directory_launch_opens_palette_preselecting_readme(tmp_path):
+    """A directory launch renders README behind an auto-opened quick-open palette
+    (README preselected) and does NOT show the tree sidebar."""
     import asyncio
     from mdview.filetree import initial_file
+    from mdview.quick_open import QuickOpenScreen
+    from textual.widgets import OptionList
 
     async def scenario():
         (tmp_path / "README.md").write_text("# Readme\n\nbody\n")
@@ -2846,9 +3122,43 @@ def test_directory_launch_shows_sidebar_and_opens_readme(tmp_path):
         app = MdViewerApp(first, root_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
-            sidebar = app.query_one("#sidebar", DirectoryTree)
-            assert sidebar.display
+            await pilot.pause()
+            # README is rendered behind.
             assert app._md_path == (tmp_path / "README.md").resolve()
+            # The tree sidebar is not shown by default.
+            assert not app.query("#sidebar")
+            # The palette is open with README preselected.
+            assert isinstance(app.screen, QuickOpenScreen)
+            highlighted = app.screen.query_one("#quick-open-list", OptionList).highlighted
+            entry = app.screen._ranked[highlighted][0]
+            assert entry.payload == (tmp_path / "README.md").resolve()
+
+    asyncio.run(scenario())
+
+
+def test_quick_open_preselects_current_file(tmp_path):
+    """Opening the palette highlights the file currently being viewed, even when
+    it isn't first in the list."""
+    import asyncio
+
+    from textual.widgets import OptionList
+
+    (tmp_path / "AAA.md").write_text("# A\n")  # sorts before README.md
+    (tmp_path / "README.md").write_text("# R\n")
+
+    async def scenario():
+        app = MdViewerApp(tmp_path / "README.md", root_dir=tmp_path)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            # If a palette auto-opened on launch, close it first.
+            await pilot.press("escape")
+            await pilot.pause()
+            await pilot.press("ctrl+o")
+            await pilot.pause()
+            ol = app.screen.query_one("#quick-open-list", OptionList)
+            entry = app.screen._ranked[ol.highlighted][0]
+            assert entry.payload == (tmp_path / "README.md").resolve()
 
     asyncio.run(scenario())
 

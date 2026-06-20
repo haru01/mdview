@@ -51,6 +51,8 @@ from mdview.filetree import is_viewable
 from mdview.help import HelpScreen
 from mdview.image_zoom import ZoomableImage
 from mdview.mermaid import MermaidRenderError, find_mmdc, render_mermaid
+from mdview.quick_open import QuickOpenScreen
+from mdview.quickopen import DiffSource, build_entries, is_git_repo, list_viewable_files
 from mdview.search import compile_query
 from mdview.section_insight import SectionInsightScreen
 from mdview.selection import (
@@ -164,6 +166,10 @@ class _CommandLine(Input):
 class MdViewerApp(App):
     CSS_PATH = "theme.css"
 
+    # Disable Textual's built-in command palette (Ctrl+P) — unused here, and we
+    # don't want Ctrl+P opening it. Our quick-open finder is Ctrl+O / `:e`.
+    ENABLE_COMMAND_PALETTE = False
+
     # less/delta-style key map. Esc is `cancel` (never quit); quitting is `q` or
     # `:q`. Key *names* matter for the punctuation: see textual.keys
     # (`]`=right_square_bracket, `}`=right_curly_bracket, `:`=colon, etc.).
@@ -214,6 +220,8 @@ class MdViewerApp(App):
         Binding("w", "edit_selection", "Edit sel", show=True),
         Binding("y", "copy_selection", "Copy", show=True),
         Binding("e", "toggle_sidebar", "Files", show=True),
+        # quick-open fuzzy finder (also `:e`/`:open`)
+        Binding("ctrl+o", "quick_open", "Open file", show=True),
         # help
         Binding("question_mark", "help", "Help", show=True),
     ]
@@ -300,6 +308,10 @@ class MdViewerApp(App):
         # completes — a worker would hang `App.workers.wait_for_complete()`.
         # Re-pointed on navigation, cancelled on unmount, skipped for stdin.
         self._watch_task: asyncio.Task[None] | None = None
+        # A transient view has no backing file to watch or save to (a captured
+        # git/gh diff opened from the palette). Set true while one is shown,
+        # cleared on navigation to a real file in `_load_file`.
+        self._transient_view: bool = False
         if content is not None:
             # stdin has no source directory, so relative images/links resolve
             # against base_dir (defaults to CWD). Stash the text in the tempdir
@@ -369,11 +381,12 @@ class MdViewerApp(App):
         await self._render_source(source)
         self._disk_baseline = text
         self._start_watching()
-        # A directory launch (`mdview <dir>`) opens with the sidebar showing and
-        # focused so the file tree is ready to navigate.
+        # A directory launch (`mdview <dir>`) renders the initial file (README)
+        # and immediately opens the quick-open palette — preselected to that file
+        # — so picking what to read is the first move. The tree stays hidden
+        # (toggle with `e`); Esc closes the palette and leaves README on screen.
         if self._root_dir is not None:
-            tree = await self._ensure_sidebar()
-            tree.focus()
+            self.action_quick_open()
 
     async def _inject_images(self) -> None:
         viewer = self.query_one(MarkdownViewer)
@@ -732,12 +745,12 @@ class MdViewerApp(App):
     def _start_watching(self) -> None:
         """(Re)start the resident task watching the viewed file for external
         edits. Called on load and on every navigation so it tracks the *current*
-        `_md_path`; the old task is cancelled first. stdin has no real file, so
-        it is not watched."""
+        `_md_path`; the old task is cancelled first. An ephemeral view (stdin /
+        captured diff) has no real file, so it is not watched."""
         if self._watch_task is not None:
             self._watch_task.cancel()
             self._watch_task = None
-        if self._display_name == "(stdin)":
+        if self._is_ephemeral():
             return
         # Pass the dir/path as args so the task watches a fixed snapshot; a later
         # navigation cancels this task and starts a fresh one.
@@ -905,6 +918,7 @@ class MdViewerApp(App):
         regenerated heading ids would otherwise dangle.
         """
         viewer = self.query_one(MarkdownViewer)
+        await self._remove_injected_widgets()
         await viewer.document.update(text)
         self._end_search()
         self._reset_insights()
@@ -913,6 +927,21 @@ class MdViewerApp(App):
         await self._inject_diff_hunks()
         await self._inject_event_flows()
         await self._inject_section_insights()
+
+    async def _remove_injected_widgets(self) -> None:
+        """Drop widgets the injection passes mounted into the document.
+
+        `document.update` only removes `MarkdownBlock` children, so the widgets we
+        swap in for fences/paragraphs (`DiffHunk`, `EventFlow`, and image widgets)
+        would orphan and stay visible across a re-render — e.g. a diff's hunks
+        lingering on top of a freshly navigated Markdown file. Removing
+        `ZoomableImage` first detaches its inner `Image`, so the later `Image`
+        sweep only sees standalone (Mermaid) images.
+        """
+        doc = self.query_one(MarkdownViewer).document
+        for widget_type in (DiffHunk, EventFlow, ZoomableImage, Image):
+            for widget in list(doc.query(widget_type)):
+                await widget.remove()
 
     def _source_for(self, text: str) -> str:
         """Return the source to render for raw file *text*, updating `_diff_files`.
@@ -938,6 +967,7 @@ class MdViewerApp(App):
         self._md_path = path
         self._md_dir = path.parent
         self.title = path.name
+        self._transient_view = False  # a real file again (clears a diff view)
         await self._render_source(self._source_for(text))
         # Navigating to a new document starts a fresh edit session.
         self._disk_baseline = text
@@ -1096,6 +1126,79 @@ class MdViewerApp(App):
             return
         self.push_screen(TocScreen(viewer, toc_data))
 
+    def action_quick_open(self) -> None:
+        # Fuzzy-find a viewable file under the sidebar root (or the current
+        # document's dir) — plus the git/gh diff sources when in a repo — and open
+        # the pick via the normal history-tracking nav / a captured-diff view.
+        self.query_one("#cmdline-bar").display = False
+        root = self._root_dir or self._md_dir
+        files = list_viewable_files(root)
+        entries = build_entries(root, files, include_diffs=is_git_repo(root))
+        self.push_screen(
+            QuickOpenScreen(entries, current=self._md_path),
+            self._on_quick_open_picked,
+        )
+
+    def _on_quick_open_picked(self, payload: object) -> None:
+        # Esc/empty pick → None. A DiffSource captures and renders git/gh output;
+        # a Path navigates (reopening the current file is a no-op).
+        self.set_focus(None)
+        if payload is None:
+            return
+        if isinstance(payload, DiffSource):
+            self._open_diff_source(payload)
+            return
+        path = payload
+        if path == self._md_path:
+            return
+        self.run_worker(self._navigate_to(path, ""), exclusive=True)
+
+    @work(exclusive=True)
+    async def _open_diff_source(self, source: DiffSource) -> None:
+        """Run the git/gh diff for *source* and render it as a transient view.
+
+        The capture is a blocking subprocess, so it runs off the UI thread; a
+        missing binary / non-repo / empty diff surfaces as a notice (mirroring the
+        CLI's `--diff`/`--pr` errors) rather than replacing the view.
+        """
+        from mdview.diffsource import DiffSourceError, capture_diff
+
+        self.notify(f"{source.label} を取得中…")
+        try:
+            text = await asyncio.to_thread(capture_diff, source.source, source.ref)
+        except DiffSourceError as e:
+            self.notify(str(e), severity="error")
+            return
+        if not text.strip():
+            self.notify("変更はありません")
+            return
+        await self._show_captured_diff(source.label, text)
+
+    async def _show_captured_diff(self, label: str, text: str) -> None:
+        """Render captured diff *text* as a transient, no-backing-file view.
+
+        Like the stdin path, the raw text is stashed in the tempdir so the rest of
+        the pipeline has a real `_md_path`; `_transient_view` then suppresses file
+        watching and `:w` (there's nothing to save back to). The previous document
+        is pushed onto the history stack so `Backspace` returns to it.
+        """
+        viewer = self.query_one(MarkdownViewer)
+        if self._md_path is not None:
+            self._history.append((self._md_path, viewer.scroll_y))
+        diff_file = Path(self._tempdir.name) / "captured.diff"
+        diff_file.write_text(text, encoding="utf-8")
+        self._md_path = diff_file
+        self._transient_view = True
+        self._display_name = label
+        self.title = label
+        await self._render_source(self._source_for(text))
+        # No file to diff against: the buffer is never dirty, so `q` quits clean.
+        self._disk_baseline = viewer.document.source
+        self._undo_stack.clear()
+        self._editing = False
+        self._start_watching()  # the transient guard turns it into a no-op
+        viewer.scroll_home(animate=False)
+
     def action_next_match(self) -> None:
         # `n` steps search matches; no-op when no search is active.
         if self._search_hits:
@@ -1235,12 +1338,19 @@ class MdViewerApp(App):
             self._undo()
         elif command == "help":
             self.action_help()
+        elif command == "open":
+            self.action_quick_open()
         elif raw.strip():
             self.notify(f"未知のコマンド: :{raw.strip()}", severity="warning")
 
     def _is_dirty(self) -> bool:
         """Whether the live buffer differs from what's on disk (`:w` baseline)."""
         return self.query_one(MarkdownViewer).document.source != self._disk_baseline
+
+    def _is_ephemeral(self) -> bool:
+        """Whether the current view has no real file behind it — stdin or a
+        captured-diff transient view — so it can't be watched or written back."""
+        return self._display_name == "(stdin)" or self._transient_view
 
     def action_quit(self) -> None:
         """Quit, but guard against discarding unsaved AI edits (`:q!` forces it)."""
@@ -1254,13 +1364,13 @@ class MdViewerApp(App):
     def _write_file(self) -> bool:
         """Write the live buffer to disk (`:w`). Returns True on success.
 
-        A stdin document has no real target file, so it is refused. On an OS error
-        the buffer stays dirty (so the quit guard still fires and the user isn't
-        misled into thinking it saved).
+        A stdin document or a captured-diff view has no real target file, so it is
+        refused. On an OS error the buffer stays dirty (so the quit guard still
+        fires and the user isn't misled into thinking it saved).
         """
-        if self._display_name == "(stdin)":
+        if self._is_ephemeral():
             self.notify(
-                "標準入力から開いた文書は保存できません (:q! で終了)", severity="warning"
+                "このビューは保存できません (:q! で終了)", severity="warning"
             )
             return False
         if self._md_path is None:

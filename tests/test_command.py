@@ -21,6 +21,13 @@ def test_edit_loop_commands() -> None:
     assert parse_command("u") == "undo"
 
 
+def test_quick_open_commands() -> None:
+    assert parse_command("e") == "open"
+    assert parse_command("edit") == "open"
+    assert parse_command("open") == "open"
+    assert parse_command("o") == "open"
+
+
 def test_whitespace_and_case_are_ignored() -> None:
     assert parse_command("  Q  ") == "quit"
     assert parse_command("Help") == "help"
