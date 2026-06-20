@@ -37,15 +37,21 @@ class QuickOpenScreen(ModalScreen):
         ("up,ctrl+p", "cursor_up", "Up"),
     ]
 
-    def __init__(self, entries: list[QuickOpenEntry]) -> None:
+    def __init__(
+        self, entries: list[QuickOpenEntry], *, current: object = None
+    ) -> None:
         super().__init__()
         self._entries = entries
-        # Entries in current display order; the highlighted index maps here.
-        self._current: list[QuickOpenEntry] = []
+        # The payload to preselect when the query is empty (the file currently
+        # being viewed), so opening the palette highlights "where you are".
+        self._current = current
+        # The ranked top slice currently shown, in display order; the highlighted
+        # index maps into it (paired with each match's highlight offsets).
+        self._ranked: list[tuple[QuickOpenEntry, list[int]]] = []
 
     def compose(self) -> ComposeResult:
         with Vertical(id="quick-open-dialog") as dialog:
-            dialog.border_title = "ファイルを開く"
+            dialog.border_title = "ファイルを開く  (Ctrl+O / :e)"
             yield Input(placeholder="ファイル名を入力… (Enter で開く, Esc で閉じる)", id="quick-open-input")
             yield OptionList(id="quick-open-list")
 
@@ -55,16 +61,25 @@ class QuickOpenScreen(ModalScreen):
 
     def _repopulate(self, query: str) -> None:
         """Re-rank the entries against *query* and rebuild the option list."""
-        ranked = fuzzy_filter(query, self._entries, key=lambda e: e.label)
-        self._current = [item for item, _ in ranked[:_MAX_RESULTS]]
+        self._ranked = fuzzy_filter(query, self._entries, key=lambda e: e.label)[
+            :_MAX_RESULTS
+        ]
         option_list = self.query_one("#quick-open-list", OptionList)
         option_list.clear_options()
         option_list.add_options(
-            Option(_render_path(item.label, indices))
-            for item, indices in ranked[:_MAX_RESULTS]
+            Option(_render_path(item.label, indices)) for item, indices in self._ranked
         )
-        if self._current:
-            option_list.highlighted = 0
+        if self._ranked:
+            option_list.highlighted = self._default_highlight(query)
+
+    def _default_highlight(self, query: str) -> int:
+        """The row to highlight after a rebuild: the current file when the query
+        is empty (so the palette opens on "where you are"), else the top match."""
+        if not query and self._current is not None:
+            for index, (entry, _) in enumerate(self._ranked):
+                if entry.payload == self._current:
+                    return index
+        return 0
 
     def on_input_changed(self, event: Input.Changed) -> None:
         self._repopulate(event.value)
@@ -86,10 +101,10 @@ class QuickOpenScreen(ModalScreen):
         self._dismiss_with(self.query_one("#quick-open-list", OptionList).highlighted)
 
     def _dismiss_with(self, index: int | None) -> None:
-        if index is None or not (0 <= index < len(self._current)):
+        if index is None or not (0 <= index < len(self._ranked)):
             self.dismiss(None)
             return
-        self.dismiss(self._current[index].payload)
+        self.dismiss(self._ranked[index][0].payload)
 
 
 def _render_path(text: str, indices: list[int]) -> Text:
