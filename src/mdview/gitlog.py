@@ -72,6 +72,54 @@ def parse_log(stdout: str) -> list[Commit]:
     return commits
 
 
+def split_show(text: str) -> tuple[str, str]:
+    """Split `git show` output into ``(message, diff)``.
+
+    `git show` prints commit metadata (``commit``/``Author``/``Date`` headers and
+    the 4-space-indented log message) *above* the unified diff, so the whole text
+    isn't front-anchored as a diff — `looks_like_diff` would reject it and the diff
+    would render as plain prose. This finds where the diff begins (the first
+    ``diff --git`` line, or a plain ``--- ``/``+++`` file header) and returns the
+    diff from there plus the de-indented commit message (the indented lines only,
+    so the `commit`/`Author`/`Date` headers drop out). With no diff (an empty or
+    merge commit), `diff` is ``""`` and `message` is the whole de-indented preamble.
+    """
+    lines = text.splitlines()
+    split_at = len(lines)
+    for i, line in enumerate(lines):
+        if line.startswith("diff --git "):
+            split_at = i
+            break
+        if line.startswith("--- ") and i + 1 < len(lines) and lines[i + 1].startswith("+++ "):
+            split_at = i
+            break
+    preamble, diff_lines = lines[:split_at], lines[split_at:]
+    # The log message is indented by 4 spaces; keep only those lines (dropping the
+    # commit/Author/Date headers) and strip the indent.
+    message = "\n".join(
+        line[4:] for line in preamble if line.startswith("    ")
+    ).strip()
+    diff = "\n".join(diff_lines)
+    if diff and not diff.endswith("\n"):
+        diff += "\n"
+    return message, diff
+
+
+def commit_markdown_header(commit: Commit, message: str) -> str:
+    """Scaffold a commit's metadata as a Markdown header to sit above its diff.
+
+    The subject is an H1, followed by a muted ``short · author · date`` line and
+    the message body (the message minus its first line, which is the subject).
+    Ends with a blank line so the diff scaffold (`diff.diff_to_markdown`) follows
+    cleanly. The diff-presentation counterpart for commits, kept pure/testable.
+    """
+    md = f"# {commit.subject}\n\n`{commit.short}` · {commit.author} · {commit.date}\n\n"
+    body = "\n".join(message.splitlines()[1:]).strip()  # drop the subject line
+    if body:
+        md += f"{body}\n\n"
+    return md
+
+
 def capture_log(limit: int, ref: str | None = None) -> list[Commit]:
     """Run `git log` and return the parsed commits.
 

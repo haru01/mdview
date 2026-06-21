@@ -10,10 +10,78 @@ from mdview.gitlog import (
     Commit,
     capture_log,
     capture_show,
+    commit_markdown_header,
     git_log_command,
     git_show_command,
     parse_log,
+    split_show,
 )
+
+
+# --- split_show: separate `git show` metadata from the unified diff ----------
+
+_GIT_SHOW = """\
+commit aaaa1111bbbb2222cccc3333
+Author: Alice <alice@example.com>
+Date:   Mon Jun 16 10:00:00 2026 +0900
+
+    feat: add the thing
+
+    A longer body line explaining the thing.
+
+diff --git a/foo.py b/foo.py
+index 111..222 100644
+--- a/foo.py
++++ b/foo.py
+@@ -1,2 +1,2 @@
+-old
++new
+"""
+
+
+def test_split_show_separates_message_and_diff() -> None:
+    message, diff = split_show(_GIT_SHOW)
+    # The diff portion starts at `diff --git` and is itself diff-detectable.
+    assert diff.startswith("diff --git a/foo.py b/foo.py")
+    from mdview.diff import looks_like_diff
+
+    assert looks_like_diff(diff)
+    # The message is de-indented (no leading 4 spaces) and drops the
+    # commit/Author/Date headers.
+    assert "feat: add the thing" in message
+    assert "A longer body line" in message
+    assert "Author:" not in message
+    assert "commit aaaa1111" not in message
+    assert not message.startswith("    ")
+
+
+def test_split_show_plain_diff_has_no_message() -> None:
+    plain = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n"
+    message, diff = split_show(plain)
+    assert message == ""
+    assert diff == plain
+
+
+def test_split_show_no_diff_returns_message_only() -> None:
+    # An empty/merge commit with no file changes.
+    text = "commit deadbeef\nAuthor: A\nDate:   now\n\n    just a message\n"
+    message, diff = split_show(text)
+    assert diff == ""
+    assert "just a message" in message
+
+
+def test_commit_markdown_header_includes_subject_meta_and_body() -> None:
+    commit = Commit(
+        hash="aaaa1111", short="aaaa111", author="Alice", date="2 days ago", subject="feat: add the thing"
+    )
+    md = commit_markdown_header(commit, "feat: add the thing\n\nA longer body line.")
+    assert "# feat: add the thing" in md
+    assert "aaaa111" in md
+    assert "Alice" in md
+    assert "2 days ago" in md
+    assert "A longer body line." in md
+    # The subject isn't duplicated as body text below the metadata line.
+    assert md.count("A longer body line.") == 1
 
 
 # --- git_log_command / git_show_command: pure argv building ------------------

@@ -1233,9 +1233,17 @@ class MdViewerApp(App):
 
     @work(exclusive=True)
     async def _open_commit_diff(self, commit: Commit) -> None:
-        """Render the selected commit's `git show` diff as a transient view."""
+        """Render the selected commit's `git show` as a transient view.
+
+        `git show` prefixes the diff with commit metadata, so the whole text isn't
+        diff-detectable; `split_show` peels that off. The metadata becomes a
+        Markdown header (`commit_markdown_header`) above the diff, and the diff
+        portion flows through the normal scaffold — so it's delta-coloured and its
+        per-file `## @` headings get the 💡 AI-insight button, exactly like any
+        other diff view.
+        """
         from mdview.diffsource import DiffSourceError
-        from mdview.gitlog import capture_show
+        from mdview.gitlog import capture_show, commit_markdown_header, split_show
 
         self.notify(f"{commit.short} を取得中…")
         try:
@@ -1246,7 +1254,14 @@ class MdViewerApp(App):
         if not text.strip():
             self.notify("差分はありません")
             return
-        await self._show_captured_diff(f"{commit.short} {commit.subject}", text)
+        message, diff_text = split_show(text)
+        header = commit_markdown_header(commit, message)
+        label = f"{commit.short} {commit.subject}"
+        if diff_text.strip():
+            await self._show_captured_diff(label, diff_text, prelude=header)
+        else:
+            # An empty/merge commit with no file changes: show just the message.
+            await self._show_captured_diff(label, header)
 
     @work(exclusive=True)
     async def _open_diff_source(self, source: DiffSource) -> None:
@@ -1269,13 +1284,15 @@ class MdViewerApp(App):
             return
         await self._show_captured_diff(source.label, text)
 
-    async def _show_captured_diff(self, label: str, text: str) -> None:
+    async def _show_captured_diff(self, label: str, text: str, *, prelude: str = "") -> None:
         """Render captured diff *text* as a transient, no-backing-file view.
 
         Like the stdin path, the raw text is stashed in the tempdir so the rest of
         the pipeline has a real `_md_path`; `_transient_view` then suppresses file
         watching and `:w` (there's nothing to save back to). The previous document
-        is pushed onto the history stack so `Backspace` returns to it.
+        is pushed onto the history stack so `Backspace` returns to it. *prelude*
+        (optional Markdown, e.g. a commit header) is prepended to the scaffolded
+        source so it renders above the delta diff.
         """
         viewer = self.query_one(MarkdownViewer)
         if self._md_path is not None:
@@ -1286,7 +1303,7 @@ class MdViewerApp(App):
         self._transient_view = True
         self._display_name = label
         self.title = label
-        await self._render_source(self._source_for(text))
+        await self._render_source(prelude + self._source_for(text))
         # No file to diff against: the buffer is never dirty, so `q` quits clean.
         self._disk_baseline = viewer.document.source
         self._undo_stack.clear()

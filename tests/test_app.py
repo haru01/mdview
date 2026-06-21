@@ -396,6 +396,75 @@ def test_log_launch_opens_commit_browser_and_pick_shows_diff(tmp_path, monkeypat
     asyncio.run(driver())
 
 
+def test_commit_show_with_metadata_renders_colored_diff_and_header(tmp_path, monkeypatch) -> None:
+    """`git show` output (commit metadata + diff) renders the metadata as a Markdown
+    header and the diff delta-style — proving the diff isn't shown as plain prose."""
+    import asyncio
+
+    import mdview.gitlog as gitlog
+    from textual.widgets._markdown import MarkdownH1, MarkdownH2
+    from mdview.commit_log import CommitLogScreen
+    from mdview.diff_widget import DiffHunk
+    from mdview.gitlog import Commit
+
+    git_show = (
+        "commit aaaa1111bbbb2222\n"
+        "Author: Alice <alice@example.com>\n"
+        "Date:   Mon Jun 16 10:00:00 2026 +0900\n"
+        "\n"
+        "    feat: add the thing\n"
+        "\n"
+        "    body explaining it\n"
+        "\n"
+        "diff --git a/foo.py b/foo.py\n"
+        "index 111..222 100644\n"
+        "--- a/foo.py\n"
+        "+++ b/foo.py\n"
+        "@@ -1,2 +1,2 @@\n"
+        "-old line\n"
+        "+new line\n"
+        " context\n"
+    )
+    commit = Commit(
+        hash="aaaa1111bbbb2222", short="aaaa111", author="Alice", date="2 days ago", subject="feat: add the thing"
+    )
+    monkeypatch.setattr(gitlog, "capture_log", lambda limit: [commit])
+    monkeypatch.setattr(gitlog, "capture_show", lambda commit_hash: git_show)
+    # With claude present, _inject_section_insights adds the 💡 AI button.
+    monkeypatch.setattr("mdview.app.find_claude", lambda: "claude")
+
+    async def driver() -> None:
+        app = MdViewerApp(None, root_dir=tmp_path, open_log=True)
+        async with app.run_test(size=(80, 24)) as pilot:
+            for _ in range(20):
+                await pilot.pause()
+                if isinstance(app.screen, CommitLogScreen):
+                    break
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+                if list(app.query(DiffHunk)):
+                    break
+
+            # The diff is delta-coloured (DiffHunk), not plain text.
+            assert list(app.query(DiffHunk)), "commit diff should render delta-style"
+            # The commit message is a Markdown header above it.
+            h1s = [str(h._content) for h in app.query(MarkdownH1)]
+            assert any("feat: add the thing" in t for t in h1s), "commit subject H1 missing"
+            # The per-file `## @ file` heading exists and carries the 💡 AI-insight
+            # button (added by _inject_section_insights when claude is present).
+            file_headings = [
+                h for h in app.query(MarkdownH2) if h._content.plain.startswith("@ ")
+            ]
+            assert file_headings, "diff file heading missing"
+            assert all(
+                h._content.plain.rstrip().endswith("💡") for h in file_headings
+            ), "diff file heading should carry the 💡 AI-insight button"
+            assert app._diff_files, "the diff model should be parsed for hunk injection"
+
+    asyncio.run(driver())
+
+
 def test_colon_log_command_opens_commit_browser(tmp_path, monkeypatch) -> None:
     """`:log` opens the same commit browser."""
     import asyncio
