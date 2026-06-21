@@ -36,12 +36,24 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="show a PR diff via `gh pr diff [N]` (no N = current branch)",
     )
+    group.add_argument(
+        "--log",
+        action="store_true",
+        help="browse recent commits (`git log`); pick one to view its diff",
+    )
     return parser
 
 
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
+
+    # `--log`: browse commits (TUI) or print the recent log (non-TTY).
+    if args.log:
+        if args.file is not None:
+            parser.error("--log cannot be combined with a file argument")
+        _run_log()
+        return
 
     # `--diff`/`--staged`/`--pr`: run the diff command ourselves and view its
     # output, so no manual `git diff | mdview -` pipe is needed.
@@ -137,6 +149,28 @@ def _run_source(source: str, ref: str | None) -> None:
         return
     # Launched from a terminal, so stdin is already the tty — no reattach needed.
     _view_captured(text, reattach=False)
+
+
+def _run_log() -> None:
+    """`mdview --log`: open the commit browser (TUI) or print the log (non-TTY)."""
+    if not sys.stdout.isatty():
+        from mdview.gitlog import DEFAULT_LOG_LIMIT, DiffSourceError, capture_log
+
+        try:
+            commits = capture_log(DEFAULT_LOG_LIMIT)
+        except DiffSourceError as e:
+            print(f"mdview: {e}", file=sys.stderr)
+            sys.exit(1)
+        if not commits:
+            print("mdview: no commits", file=sys.stderr)
+            return
+        for c in commits:
+            print(f"{c.short}  {c.subject}  ({c.author}, {c.date})")
+        return
+
+    from mdview.app import MdViewerApp
+
+    MdViewerApp(None, root_dir=Path.cwd(), open_log=True).run()
 
 
 def _run_stdin() -> None:

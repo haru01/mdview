@@ -51,6 +51,7 @@ HELP_SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
             ("t", "目次"),
             ("e", "ファイルツリー 開閉"),
             ("^O  :e", "ファイル/diff を開く（あいまい検索）"),
+            ("l  :log", "コミット履歴を開く"),
         ],
     ),
     (
@@ -78,6 +79,7 @@ HELP_SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
             (":wq", "保存して終了"),
             (":q!", "保存せず終了"),
             (":undo", "直前の AI 編集を取り消し"),
+            (":log", "コミット履歴を開く (--log)"),
             (":h  ?", "このヘルプ"),
             ("Esc", "キャンセル（終了しない）"),
         ],
