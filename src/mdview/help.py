@@ -36,8 +36,9 @@ HELP_SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
     (
         "検索",
         [
-            ("/", "検索"),
+            ("/", "文書内を検索"),
             ("n / N", "次 / 前マッチ"),
+            ("^G  :grep", "プロジェクト全体を検索"),
         ],
     ),
     (
