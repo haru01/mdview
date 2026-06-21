@@ -77,6 +77,23 @@ def test_build_prompt_without_svg_dir_has_no_svg_instruction() -> None:
     assert "<svg" not in prompt
 
 
+def test_build_prompt_without_history_has_no_conversation_section() -> None:
+    """A first question (no prior turns) carries no conversation block."""
+    assert "これまでの会話" not in build_prompt("s", "q", "doc")
+    assert "これまでの会話" not in build_prompt("s", "q", "doc", history=[])
+
+
+def test_build_prompt_with_history_includes_prior_qa() -> None:
+    """A follow-up question embeds the earlier Q&A so the answer stays in thread."""
+    history = [("最初の質問", "最初の回答"), ("二番目の質問", "二番目の回答")]
+    prompt = build_prompt("抜粋", "三番目の質問", "doc", history=history)
+    assert "これまでの会話" in prompt
+    assert "最初の質問" in prompt
+    assert "最初の回答" in prompt
+    assert "二番目の質問" in prompt
+    assert "三番目の質問" in prompt
+
+
 def test_build_prompt_with_svg_dir_instructs_inline_svg(
     tmp_path: Path,
 ) -> None:
@@ -119,6 +136,24 @@ def test_ask_claude_returns_stdout_runs_in_cwd_and_embeds_document(tmp_path: Pat
     assert argv[0] == b"-p"
     assert "開いている本文".encode() in argv[1]
     assert "抜粋".encode() in argv[1]
+
+
+def test_ask_claude_passes_history_into_prompt(tmp_path: Path) -> None:
+    """`ask_claude(history=…)` threads the prior turns into the sent prompt."""
+    claude = _fake_claude(tmp_path, stdout="ok")
+    asyncio.run(
+        ask_claude(
+            "抜粋",
+            "追加の質問",
+            "doc",
+            claude=str(claude),
+            cwd=tmp_path,
+            history=[("前の質問", "前の回答")],
+        )
+    )
+    argv = (tmp_path / "argv.log").read_bytes().split(b"\0")
+    assert "前の質問".encode() in argv[1]
+    assert "前の回答".encode() in argv[1]
 
 
 def test_ask_claude_raises_on_nonzero_exit(tmp_path: Path) -> None:

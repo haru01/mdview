@@ -29,6 +29,7 @@ def build_prompt(
     *,
     svg_out_dir: Path | None = None,
     concise_svg: bool = False,
+    history: list[tuple[str, str]] | None = None,
 ) -> str:
     prompt = (
         "以下は現在開いているMarkdownドキュメントの全文と、その中からユーザーが選択した抜粋です。"
@@ -55,11 +56,15 @@ def build_prompt(
                 "図は要点が伝わる最小限の要素数でシンプルに描き、凝った装飾やグラデーションは避けて"
                 "手早く作成してください。\n\n"
             )
-    return prompt + (
-        f"# ドキュメント全文\n{document}\n\n"
-        f"# 選択された抜粋\n{selection}\n\n"
-        f"# 質問\n{question}\n"
-    )
+    prompt += f"# ドキュメント全文\n{document}\n\n# 選択された抜粋\n{selection}\n\n"
+    if history:
+        # A follow-up question: replay the prior turns so the answer stays in
+        # thread (the selection above is the fixed context across the whole
+        # conversation; this is what changes turn to turn).
+        prompt += "# これまでの会話\n"
+        for q, a in history:
+            prompt += f"## 質問\n{q}\n\n## 回答\n{a}\n\n"
+    return prompt + f"# 質問\n{question}\n"
 
 
 def build_edit_prompt(scope: str, instruction: str) -> str:
@@ -156,6 +161,7 @@ async def ask_claude(
     cwd: Path,
     svg_out_dir: Path | None = None,
     concise_svg: bool = False,
+    history: list[tuple[str, str]] | None = None,
     timeout: float = 120.0,
 ) -> str:
     """Run the CLI in print mode with the built prompt and return its stdout.
@@ -165,9 +171,16 @@ async def ask_claude(
     `extract_svgs`), which needs no file-write permission. ``svg_out_dir`` is also
     still globbed by callers as a secondary source, so a diagram Claude happens to
     save is picked up too. ``concise_svg`` steers toward a fast, minimal diagram.
+    ``history`` (prior (question, answer) turns) makes the answer a follow-up in an
+    ongoing conversation rather than a fresh one-shot.
     """
     prompt = build_prompt(
-        selection, question, document, svg_out_dir=svg_out_dir, concise_svg=concise_svg
+        selection,
+        question,
+        document,
+        svg_out_dir=svg_out_dir,
+        concise_svg=concise_svg,
+        history=history,
     )
     return await _run_claude(prompt, claude=claude, cwd=cwd, timeout=timeout)
 

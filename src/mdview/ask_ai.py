@@ -11,7 +11,6 @@ from textual.widgets import Checkbox, Input, LoadingIndicator, Markdown, Static
 
 from mdview.ai import AiQueryError, ask_claude
 from mdview.diffview import is_diff_text, render_selection
-from mdview.image_zoom import ZoomableImage
 from mdview.scroll_modal import ScrollableModalScreen
 from mdview.svg import extract_svgs
 from mdview.svg_widgets import render_svgs_into
@@ -84,6 +83,12 @@ class AskAiScreen(ScrollableModalScreen):
         # rather than into the repository; kept in its own subdir so scanning it
         # never picks up the PNG/SVG scratch files rasterization writes alongside.
         self._svg_out_dir = tmpdir / "ai-answer-svg"
+        # The conversation so far, as (question, answer) turns. The selection is
+        # the fixed context across the whole thread; this is what each follow-up
+        # adds. Replayed to `ask_claude(history=…)` so answers stay in thread.
+        self._history: list[tuple[str, str]] = []
+        # Monotonic turn counter, only for unique answer-widget ids.
+        self._turn = 0
 
     def compose(self) -> ComposeResult:
         with Vertical(id="ask-ai-dialog"):
@@ -99,8 +104,9 @@ class AskAiScreen(ScrollableModalScreen):
             loading = LoadingIndicator(id="ask-ai-loading")
             loading.display = False
             yield loading
-            with VerticalScroll(id="ask-ai-answer"):
-                yield Markdown("", id="ask-ai-answer-md")
+            # Each turn appends a question header + its own answer Markdown here,
+            # so the popup reads as a conversation rather than a single reply.
+            yield VerticalScroll(id="ask-ai-answer")
 
     def _selection_preview(self) -> str:
         text = " ".join(self._selection.split())
@@ -128,18 +134,31 @@ class AskAiScreen(ScrollableModalScreen):
             return
         self._run_query(question)
 
+    async def _mount_turn(self, question: str) -> Markdown:
+        """Append this turn's question header + a fresh answer Markdown, returning
+        the latter so the reply (and any diagrams) land in it."""
+        scroll = self.query_one("#ask-ai-answer", VerticalScroll)
+        self._turn += 1
+        header = Static(f"❯ {question}", classes="ask-ai-question")
+        answer = Markdown("", id=f"ask-ai-answer-{self._turn}")
+        await scroll.mount(header)
+        await scroll.mount(answer)
+        # Remembered so the finally block can bring this turn's start into view
+        # (the question, then its diagram, then the prose) rather than the very
+        # bottom — which would scroll a leading diagram out of sight.
+        self._last_turn_header = header
+        return answer
+
     @work(exclusive=True)
     async def _run_query(self, question: str) -> None:
         input_widget = self.query_one("#ask-ai-input", Input)
         loading = self.query_one("#ask-ai-loading", LoadingIndicator)
-        answer = self.query_one("#ask-ai-answer-md", Markdown)
         # SVG diagramming is opt-in via the checkbox; otherwise the answer is
         # plain text and we neither ask Claude for an SVG nor render one.
         svg_mode = self.query_one("#ask-ai-svg-toggle", Checkbox).value
         input_widget.disabled = True
         loading.display = True
-        await answer.update("")
-        await self._clear_images()
+        answer = await self._mount_turn(question)
         svg_out_dir = None
         if svg_mode:
             self._reset_svg_out_dir()
@@ -152,25 +171,35 @@ class AskAiScreen(ScrollableModalScreen):
                 claude=self._claude,
                 cwd=self._cwd,
                 svg_out_dir=svg_out_dir,
+                history=self._history,
             )
         except AiQueryError as e:
             await answer.update(f"**エラー:** {e}")
         else:
             if not svg_mode:
                 await answer.update(result)
+                self._history.append((question, result))
             else:
                 # Two sources, both rendered: SVGs Claude saved as files in our
                 # temp dir (the common case — `claude -p` writes to disk), and
                 # any SVG inlined into stdout (fallback). Prose is what's left.
                 inline_svgs, prose = extract_svgs(result)
                 svgs = self._read_saved_svgs() + inline_svgs
-                rendered = await self._render_svgs(svgs)
+                rendered = await self._render_svgs(svgs, before=answer)
                 # With a diagram shown, display the prose beside it; otherwise
                 # fall back to the raw answer so the SVG source isn't dropped.
-                await answer.update(prose if rendered else result)
+                shown = prose if rendered else result
+                await answer.update(shown)
+                self._history.append((question, shown))
         finally:
             loading.display = False
             input_widget.disabled = False
+            # Keep the line open for a follow-up: clear it, refocus, and bring
+            # the latest turn's start into view (header → diagram → prose).
+            input_widget.value = ""
+            input_widget.focus()
+            scroll = self.query_one("#ask-ai-answer", VerticalScroll)
+            scroll.scroll_to_widget(self._last_turn_header, top=True, animate=False)
 
     def _reset_svg_out_dir(self) -> None:
         """Start each query with an empty output dir so a re-ask doesn't re-render
@@ -189,22 +218,18 @@ class AskAiScreen(ScrollableModalScreen):
             for p in sorted(self._svg_out_dir.glob("*.svg"))
         ]
 
-    async def _render_svgs(self, svgs: list[str]) -> int:
-        """Rasterize each SVG and mount it above the prose (so the figure leads
-        and the explanation follows beneath it); return the count shown."""
+    async def _render_svgs(self, svgs: list[str], *, before: Markdown) -> int:
+        """Rasterize each SVG and mount it above *before* (this turn's prose, so
+        the figure leads and the explanation follows beneath it); return the
+        count shown."""
         if not svgs:
             return 0
         scroll = self.query_one("#ask-ai-answer", VerticalScroll)
-        prose = self.query_one("#ask-ai-answer-md", Markdown)
         return await render_svgs_into(
             scroll,
             svgs,
             self._tmpdir,
             width_hint=max(400, (self.size.width or 80) * 12),
-            before=prose,
+            before=before,
             prefix="ask-ai",
         )
-
-    async def _clear_images(self) -> None:
-        for image in list(self.query(ZoomableImage)):
-            await image.remove()

@@ -1006,6 +1006,71 @@ def test_ask_ai_plain_answer_renders_no_image(
     asyncio.run(driver())
 
 
+def test_ask_ai_follow_up_keeps_input_and_threads_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After an answer the input stays open; a follow-up appends a second turn
+    and replays the prior Q&A so the conversation stays in thread."""
+    import asyncio
+
+    from textual.widgets import Checkbox, Input, Markdown
+
+    from mdview.ask_ai import AskAiScreen
+
+    _claude_on_path(tmp_path, monkeypatch, stdout="最初の回答テキスト")
+
+    md = FIXTURES / "sample.md"
+    argv_log = tmp_path / "argv.log"
+
+    async def driver() -> None:
+        app = MdViewerApp(md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            app.screen.text_select_all()
+            await pilot.pause()
+            await pilot.press("h")
+            await pilot.pause()
+            assert isinstance(app.screen, AskAiScreen)
+            # Plain-text mode keeps this deterministic (no rasterization).
+            app.screen.query_one("#ask-ai-svg-toggle", Checkbox).value = False
+            await pilot.pause()
+
+            input_widget = app.screen.query_one("#ask-ai-input", Input)
+
+            # First turn — wait for the worker to finish (input re-enabled).
+            await pilot.press("enter")
+            for _ in range(40):
+                await pilot.pause()
+                if app.screen.query("#ask-ai-answer-1") and not input_widget.disabled:
+                    break
+            assert app.screen.query("#ask-ai-answer-1"), "first answer should mount"
+
+            # The line stays open for a follow-up: enabled, cleared, refocused.
+            assert not input_widget.disabled
+            assert input_widget.value == ""
+            assert app.screen.focused is input_widget
+
+            # Second turn: type a follow-up and submit.
+            input_widget.value = "二番目の質問"
+            await pilot.pause()
+            await pilot.press("enter")
+            for _ in range(40):
+                await pilot.pause()
+                if app.screen.query("#ask-ai-answer-2") and not input_widget.disabled:
+                    break
+            answers = list(app.screen.query_one("#ask-ai-answer").query(Markdown))
+            assert len(answers) == 2, "each turn keeps its own answer block"
+
+            # The second prompt must replay the first turn (selection + history).
+            argv = argv_log.read_bytes().split(b"\0")
+            assert "これまでの会話".encode() in argv[1]
+            assert "最初の回答テキスト".encode() in argv[1]
+            assert "二番目の質問".encode() in argv[1]
+
+    asyncio.run(driver())
+
+
 def test_ask_ai_svg_toggle_off_does_not_render_svg(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1163,9 +1228,12 @@ def test_clicking_popup_svg_opens_zoom_screen(
             app.screen.query_one("#ask-ai-svg-toggle", Checkbox).value = True
             await pilot.pause()
             await pilot.press("enter")
+            # Wait for the turn to finish (input re-enabled) so the image's layout
+            # has settled before clicking it.
+            input_widget = app.screen.query_one("#ask-ai-input")
             for _ in range(40):
                 await pilot.pause()
-                if app.screen.query(ZoomableImage):
+                if app.screen.query(ZoomableImage) and not input_widget.disabled:
                     break
             assert app.screen.query(ZoomableImage), "popup SVG should render as a ZoomableImage"
 
