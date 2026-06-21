@@ -277,6 +277,33 @@ ProjectGrepScreen {
     margin: 1 0 0 0;
 }
 
+/* ===== Commit-log browser (--log / :log) ===== */
+
+CommitLogScreen {
+    align: center middle;
+    background: $surface 60%;
+}
+
+#commit-log-dialog {
+    width: 90%;
+    height: 80%;
+    background: $panel;
+    border: round $orange;
+    padding: 1 2;
+}
+
+#commit-log-input {
+    border: none;
+    background: $boost;
+    margin: 0 0 1 0;
+}
+
+#commit-log-list {
+    width: 1fr;
+    height: 1fr;
+    background: $panel;
+}
+
 /* ===== Help modal =====
  * `?` / `:h` open a centered cheat-sheet of the key map (see help.py).
  */

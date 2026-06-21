@@ -357,6 +357,79 @@ def test_quick_open_diff_source_renders_captured_diff(tmp_path, monkeypatch) -> 
     asyncio.run(driver())
 
 
+def test_log_launch_opens_commit_browser_and_pick_shows_diff(tmp_path, monkeypatch) -> None:
+    """`--log` (open_log=True) opens the commit browser; picking a commit renders
+    its `git show` diff delta-style as a transient view."""
+    import asyncio
+
+    import mdview.gitlog as gitlog
+    from mdview.commit_log import CommitLogScreen
+    from mdview.diff_widget import DiffHunk
+    from mdview.gitlog import Commit
+
+    commits = [
+        Commit(hash="aaaa1111", short="aaaa111", author="Alice", date="2 days ago", subject="first"),
+        Commit(hash="bbbb2222", short="bbbb222", author="Bob", date="1 hour ago", subject="second"),
+    ]
+    sample = (FIXTURES / "sample.diff").read_text()
+    monkeypatch.setattr(gitlog, "capture_log", lambda limit: commits)
+    monkeypatch.setattr(gitlog, "capture_show", lambda commit_hash: sample)
+
+    async def driver() -> None:
+        app = MdViewerApp(None, root_dir=tmp_path, open_log=True)
+        async with app.run_test(size=(80, 24)) as pilot:
+            for _ in range(20):
+                await pilot.pause()
+                if isinstance(app.screen, CommitLogScreen):
+                    break
+            assert isinstance(app.screen, CommitLogScreen), "commit browser should open"
+
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+                if list(app.query(DiffHunk)):
+                    break
+            assert list(app.query(DiffHunk)), "picking a commit should show its diff"
+            assert app._transient_view
+            assert not app._is_dirty()
+
+    asyncio.run(driver())
+
+
+def test_colon_log_command_opens_commit_browser(tmp_path, monkeypatch) -> None:
+    """`:log` opens the same commit browser."""
+    import asyncio
+
+    import mdview.gitlog as gitlog
+    from mdview.commit_log import CommitLogScreen
+    from mdview.gitlog import Commit
+
+    monkeypatch.setattr(
+        gitlog,
+        "capture_log",
+        lambda limit: [Commit(hash="h", short="h", author="A", date="now", subject="s")],
+    )
+
+    (tmp_path / "README.md").write_text("# r\n")
+
+    async def driver() -> None:
+        app = MdViewerApp(tmp_path / "README.md")  # no root_dir → no auto quick-open
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("colon")
+            for ch in "log":
+                await pilot.press(ch)
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+                if isinstance(app.screen, CommitLogScreen):
+                    break
+            assert isinstance(app.screen, CommitLogScreen)
+
+    asyncio.run(driver())
+
+
 def test_opening_md_after_diff_clears_diff_widgets(tmp_path, monkeypatch) -> None:
     """After viewing a captured diff, opening an md must drop the diff widgets.
 
