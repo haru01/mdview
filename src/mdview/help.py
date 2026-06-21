@@ -51,6 +51,7 @@ HELP_SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
             ("t", "目次"),
             ("e", "ファイルツリー 開閉"),
             ("^O  :e", "ファイル/diff を開く（あいまい検索）"),
+            ("l  :log", "コミット履歴を開く"),
         ],
     ),
     (

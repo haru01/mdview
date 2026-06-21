@@ -227,6 +227,8 @@ class MdViewerApp(App):
         Binding("ctrl+o", "quick_open", "Open file", show=True),
         # project-wide grep finder (also `:grep`)
         Binding("ctrl+g", "project_grep", "Grep", show=True),
+        # git log commit browser (also `--log`/`:log`)
+        Binding("l", "git_log", "Git log", show=True),
         # help
         Binding("question_mark", "help", "Help", show=True),
     ]
@@ -372,14 +374,17 @@ class MdViewerApp(App):
     async def on_mount(self) -> None:
         self.title = self._display_name
         if self._md_path is None:
-            # No document yet (empty directory launch, or `--log`). Mount the
-            # sidebar so `e` works; then either open the commit browser (`--log`)
-            # or prompt the user to pick a file.
-            tree = await self._ensure_sidebar()
-            tree.focus()
+            # No document yet (empty directory launch, or `--log`).
             if self._open_log:
+                # `--log` opens the commit browser over an empty viewer; the
+                # sidebar stays closed (toggle with `e`, lazily mounted) — the
+                # commit picker is the first move, not the file tree.
                 self.action_git_log()
             else:
+                # Empty directory: mount + focus the tree so `e` works and the
+                # user can pick a file (the palette would be empty here).
+                tree = await self._ensure_sidebar()
+                tree.focus()
                 self.notify("左のツリーからファイルを選択してください")
             return
         try:

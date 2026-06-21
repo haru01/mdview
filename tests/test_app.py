@@ -396,6 +396,65 @@ def test_log_launch_opens_commit_browser_and_pick_shows_diff(tmp_path, monkeypat
     asyncio.run(driver())
 
 
+def test_log_launch_keeps_sidebar_closed(tmp_path, monkeypatch) -> None:
+    """`--log` opens the commit browser over an empty viewer; the file-tree
+    sidebar stays closed (it's only mounted on first `e`)."""
+    import asyncio
+
+    import mdview.gitlog as gitlog
+    from mdview.commit_log import CommitLogScreen
+    from mdview.gitlog import Commit
+
+    commits = [
+        Commit(hash="aaaa1111", short="aaaa111", author="Alice", date="2 days ago", subject="first"),
+    ]
+    monkeypatch.setattr(gitlog, "capture_log", lambda limit: commits)
+
+    async def driver() -> None:
+        app = MdViewerApp(None, root_dir=tmp_path, open_log=True)
+        async with app.run_test(size=(80, 24)) as pilot:
+            for _ in range(20):
+                await pilot.pause()
+                if isinstance(app.screen, CommitLogScreen):
+                    break
+            assert isinstance(app.screen, CommitLogScreen), "commit browser should open"
+            assert not app.query("#sidebar"), "sidebar should not be mounted on --log launch"
+
+    asyncio.run(driver())
+
+
+def test_l_key_opens_commit_browser(tmp_path, monkeypatch) -> None:
+    """The `l` shortcut opens the commit browser, just like `--log` / `:log`."""
+    import asyncio
+
+    import mdview.gitlog as gitlog
+    from mdview.commit_log import CommitLogScreen
+    from mdview.gitlog import Commit
+
+    commits = [
+        Commit(hash="aaaa1111", short="aaaa111", author="Alice", date="2 days ago", subject="first"),
+    ]
+    monkeypatch.setattr(gitlog, "capture_log", lambda limit: commits)
+
+    doc = tmp_path / "README.md"
+    doc.write_text("# Hello\n\nbody\n")
+
+    async def driver() -> None:
+        app = MdViewerApp(doc, root_dir=tmp_path)
+        async with app.run_test(size=(80, 24)) as pilot:
+            # Dismiss the auto-opened quick-open palette (directory launch).
+            await pilot.press("escape")
+            await pilot.pause()
+            await pilot.press("l")
+            for _ in range(20):
+                await pilot.pause()
+                if isinstance(app.screen, CommitLogScreen):
+                    break
+            assert isinstance(app.screen, CommitLogScreen), "`l` should open the commit browser"
+
+    asyncio.run(driver())
+
+
 def test_commit_show_with_metadata_renders_colored_diff_and_header(tmp_path, monkeypatch) -> None:
     """`git show` output (commit metadata + diff) renders the metadata as a Markdown
     header and the diff delta-style — proving the diff isn't shown as plain prose."""
