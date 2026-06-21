@@ -224,6 +224,73 @@ def test_ctrl_p_opens_quick_open_and_enter_navigates(tmp_path) -> None:
     asyncio.run(driver())
 
 
+def test_ctrl_g_opens_grep_then_enter_opens_file_and_activates_search(tmp_path) -> None:
+    """Ctrl+G opens the grep finder; picking a hit opens that file and runs the
+    query as an in-document search."""
+    import asyncio
+
+    from mdview.project_grep import ProjectGrepScreen
+
+    (tmp_path / "README.md").write_text("# Readme\nplain content\n")
+    (tmp_path / "guide.md").write_text("# Guide\nUNIQUEWORD lives here\n")
+
+    async def driver() -> None:
+        app = MdViewerApp(tmp_path / "README.md", root_dir=tmp_path)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            # A root_dir launch auto-opens the quick-open palette; close it first.
+            await pilot.press("escape")
+            await pilot.pause()
+
+            await pilot.press("ctrl+g")
+            await pilot.pause()
+            assert isinstance(app.screen, ProjectGrepScreen)
+
+            for ch in "UNIQUEWORD":
+                await pilot.press(ch)
+            await pilot.pause()
+
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+                if not isinstance(app.screen, ProjectGrepScreen):
+                    break
+
+            # Opened the file the hit lives in, and activated the search there.
+            assert app._md_path == (tmp_path / "guide.md").resolve()
+            assert app._search_query == "UNIQUEWORD"
+            assert app._search_hits, "the query should be an active in-document search"
+
+    asyncio.run(driver())
+
+
+def test_colon_grep_command_opens_grep(tmp_path) -> None:
+    """`:grep` opens the same finder as Ctrl+G."""
+    import asyncio
+
+    from mdview.project_grep import ProjectGrepScreen
+
+    (tmp_path / "README.md").write_text("# r\nword\n")
+
+    async def driver() -> None:
+        app = MdViewerApp(tmp_path / "README.md", root_dir=tmp_path)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            # A root_dir launch auto-opens the quick-open palette; close it first.
+            await pilot.press("escape")
+            await pilot.pause()
+            await pilot.press("colon")
+            for ch in "grep":
+                await pilot.press(ch)
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, ProjectGrepScreen)
+
+    asyncio.run(driver())
+
+
 def test_quick_open_lists_diff_sources_only_in_git_repo(tmp_path) -> None:
     """The palette offers the git/gh diff sources only inside a git repo."""
     import asyncio

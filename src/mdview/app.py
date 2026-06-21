@@ -51,6 +51,7 @@ from mdview.filetree import is_viewable
 from mdview.help import HelpScreen
 from mdview.image_zoom import ZoomableImage
 from mdview.mermaid import MermaidRenderError, find_mmdc, render_mermaid
+from mdview.project_grep import GrepResult, ProjectGrepScreen
 from mdview.quick_open import QuickOpenScreen
 from mdview.quickopen import DiffSource, build_entries, is_git_repo, list_viewable_files
 from mdview.search import compile_query
@@ -222,6 +223,8 @@ class MdViewerApp(App):
         Binding("e", "toggle_sidebar", "Files", show=True),
         # quick-open fuzzy finder (also `:e`/`:open`)
         Binding("ctrl+o", "quick_open", "Open file", show=True),
+        # project-wide grep finder (also `:grep`)
+        Binding("ctrl+g", "project_grep", "Grep", show=True),
         # help
         Binding("question_mark", "help", "Help", show=True),
     ]
@@ -1153,6 +1156,39 @@ class MdViewerApp(App):
             return
         self.run_worker(self._navigate_to(path, ""), exclusive=True)
 
+    def action_project_grep(self) -> None:
+        # Cross-file keyword search under the sidebar root (or the current
+        # document's dir). The file list is enumerated once here so the modal can
+        # re-search on every keystroke without re-walking the tree.
+        self.query_one("#cmdline-bar").display = False
+        root = self._root_dir or self._md_dir
+        files = list_viewable_files(root)
+        self.push_screen(ProjectGrepScreen(root, files), self._on_grep_picked)
+
+    def _on_grep_picked(self, result: object) -> None:
+        # Esc/empty pick → None. Otherwise open the file (if not already current)
+        # and activate the same query as an in-document search.
+        self.set_focus(None)
+        if result is None:
+            return
+        self.run_worker(self._open_grep_hit(result), exclusive=True)
+
+    async def _open_grep_hit(self, result: GrepResult) -> None:
+        """Open the hit's file (unless already open) and run the grep query as an
+        in-document search, so every match is highlighted and `n`/`N` step through
+        them (the view jumps to the first match)."""
+        if result.hit.path != self._md_path:
+            await self._navigate_to(result.hit.path, "")
+        # Light up the unified command line as a `/` search status line, as if the
+        # user had typed the query, then run it.
+        self._search_query = result.query
+        self._cmdline_mode = "search"
+        self.query_one("#cmdline-prompt", Static).update("/")
+        self.query_one("#cmdline", Input).value = result.query
+        self.query_one("#cmdline-bar").display = True
+        self._run_search()
+        self.set_focus(None)
+
     @work(exclusive=True)
     async def _open_diff_source(self, source: DiffSource) -> None:
         """Run the git/gh diff for *source* and render it as a transient view.
@@ -1340,6 +1376,8 @@ class MdViewerApp(App):
             self.action_help()
         elif command == "open":
             self.action_quick_open()
+        elif command == "grep":
+            self.action_project_grep()
         elif raw.strip():
             self.notify(f"未知のコマンド: :{raw.strip()}", severity="warning")
 
