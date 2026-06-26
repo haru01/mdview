@@ -51,6 +51,9 @@ from mdview.filetree import is_viewable
 from mdview.help import HelpScreen
 from mdview.image_zoom import ZoomableImage
 from mdview.mermaid import MermaidRenderError, find_mmdc, render_mermaid
+from mdview.commit_log import CommitLogScreen
+from mdview.gitlog import Commit
+from mdview.project_grep import GrepResult, ProjectGrepScreen
 from mdview.quick_open import QuickOpenScreen
 from mdview.quickopen import DiffSource, build_entries, is_git_repo, list_viewable_files
 from mdview.search import compile_query
@@ -222,6 +225,10 @@ class MdViewerApp(App):
         Binding("e", "toggle_sidebar", "Files", show=True),
         # quick-open fuzzy finder (also `:e`/`:open`)
         Binding("ctrl+o", "quick_open", "Open file", show=True),
+        # project-wide grep finder (also `:grep`)
+        Binding("ctrl+g", "project_grep", "Grep", show=True),
+        # git log commit browser (also `--log`/`:log`)
+        Binding("l", "git_log", "Git log", show=True),
         # help
         Binding("question_mark", "help", "Help", show=True),
     ]
@@ -234,8 +241,12 @@ class MdViewerApp(App):
         base_dir: Path | None = None,
         diff_files: list[FileDiff] | None = None,
         root_dir: Path | None = None,
+        open_log: bool = False,
     ) -> None:
         super().__init__()
+        # `mdview --log`: open the commit browser on mount (over an empty viewer)
+        # instead of the quick-open palette. Selecting a commit shows its diff.
+        self._open_log = open_log
         # Directory the file-tree sidebar is rooted at. When given on launch
         # (`mdview <dir>`) the sidebar starts visible; otherwise it defaults to
         # the viewed file's parent and starts hidden (toggle with `e`).
@@ -363,11 +374,18 @@ class MdViewerApp(App):
     async def on_mount(self) -> None:
         self.title = self._display_name
         if self._md_path is None:
-            # Empty directory launch: nothing to render yet — show the sidebar
-            # and prompt the user to choose a file.
-            tree = await self._ensure_sidebar()
-            tree.focus()
-            self.notify("左のツリーからファイルを選択してください")
+            # No document yet (empty directory launch, or `--log`).
+            if self._open_log:
+                # `--log` opens the commit browser over an empty viewer; the
+                # sidebar stays closed (toggle with `e`, lazily mounted) — the
+                # commit picker is the first move, not the file tree.
+                self.action_git_log()
+            else:
+                # Empty directory: mount + focus the tree so `e` works and the
+                # user can pick a file (the palette would be empty here).
+                tree = await self._ensure_sidebar()
+                tree.focus()
+                self.notify("左のツリーからファイルを選択してください")
             return
         try:
             text = self._md_path.read_text(encoding="utf-8")
@@ -385,7 +403,9 @@ class MdViewerApp(App):
         # and immediately opens the quick-open palette — preselected to that file
         # — so picking what to read is the first move. The tree stays hidden
         # (toggle with `e`); Esc closes the palette and leaves README on screen.
-        if self._root_dir is not None:
+        if self._open_log:
+            self.action_git_log()
+        elif self._root_dir is not None:
             self.action_quick_open()
 
     async def _inject_images(self) -> None:
@@ -1153,6 +1173,101 @@ class MdViewerApp(App):
             return
         self.run_worker(self._navigate_to(path, ""), exclusive=True)
 
+    def action_project_grep(self) -> None:
+        # Cross-file keyword search under the sidebar root (or the current
+        # document's dir). The file list is enumerated once here so the modal can
+        # re-search on every keystroke without re-walking the tree.
+        self.query_one("#cmdline-bar").display = False
+        root = self._root_dir or self._md_dir
+        files = list_viewable_files(root)
+        self.push_screen(ProjectGrepScreen(root, files), self._on_grep_picked)
+
+    def _on_grep_picked(self, result: object) -> None:
+        # Esc/empty pick → None. Otherwise open the file (if not already current)
+        # and activate the same query as an in-document search.
+        self.set_focus(None)
+        if result is None:
+            return
+        self.run_worker(self._open_grep_hit(result), exclusive=True)
+
+    async def _open_grep_hit(self, result: GrepResult) -> None:
+        """Open the hit's file (unless already open) and run the grep query as an
+        in-document search, so every match is highlighted and `n`/`N` step through
+        them (the view jumps to the first match)."""
+        if result.hit.path != self._md_path:
+            await self._navigate_to(result.hit.path, "")
+        # Light up the unified command line as a `/` search status line, as if the
+        # user had typed the query, then run it.
+        self._search_query = result.query
+        self._cmdline_mode = "search"
+        self.query_one("#cmdline-prompt", Static).update("/")
+        self.query_one("#cmdline", Input).value = result.query
+        self.query_one("#cmdline-bar").display = True
+        self._run_search()
+        self.set_focus(None)
+
+    @work(exclusive=True)
+    async def action_git_log(self) -> None:
+        """Open the commit browser (`--log` / `:log`): list recent commits, and
+        on pick render that commit's `git show` diff in the transient view.
+
+        The capture runs off the UI thread (blocking subprocess); a missing git /
+        non-repo surfaces as a notice (mirroring the diff-source errors). git runs
+        in the process CWD, as the `--diff`/`--pr` sources do.
+        """
+        from mdview.diffsource import DiffSourceError
+        from mdview.gitlog import DEFAULT_LOG_LIMIT, capture_log
+
+        self.notify("git log を取得中…")
+        try:
+            commits = await asyncio.to_thread(capture_log, DEFAULT_LOG_LIMIT)
+        except DiffSourceError as e:
+            self.notify(str(e), severity="error")
+            return
+        if not commits:
+            self.notify("コミットがありません")
+            return
+        self.push_screen(CommitLogScreen(commits), self._on_commit_picked)
+
+    def _on_commit_picked(self, commit: object) -> None:
+        # Esc/empty pick → None. Otherwise show that commit's diff.
+        self.set_focus(None)
+        if commit is None:
+            return
+        self._open_commit_diff(commit)
+
+    @work(exclusive=True)
+    async def _open_commit_diff(self, commit: Commit) -> None:
+        """Render the selected commit's `git show` as a transient view.
+
+        `git show` prefixes the diff with commit metadata, so the whole text isn't
+        diff-detectable; `split_show` peels that off. The metadata becomes a
+        Markdown header (`commit_markdown_header`) above the diff, and the diff
+        portion flows through the normal scaffold — so it's delta-coloured and its
+        per-file `## @` headings get the 💡 AI-insight button, exactly like any
+        other diff view.
+        """
+        from mdview.diffsource import DiffSourceError
+        from mdview.gitlog import capture_show, commit_markdown_header, split_show
+
+        self.notify(f"{commit.short} を取得中…")
+        try:
+            text = await asyncio.to_thread(capture_show, commit.hash)
+        except DiffSourceError as e:
+            self.notify(str(e), severity="error")
+            return
+        if not text.strip():
+            self.notify("差分はありません")
+            return
+        message, diff_text = split_show(text)
+        header = commit_markdown_header(commit, message)
+        label = f"{commit.short} {commit.subject}"
+        if diff_text.strip():
+            await self._show_captured_diff(label, diff_text, prelude=header)
+        else:
+            # An empty/merge commit with no file changes: show just the message.
+            await self._show_captured_diff(label, header)
+
     @work(exclusive=True)
     async def _open_diff_source(self, source: DiffSource) -> None:
         """Run the git/gh diff for *source* and render it as a transient view.
@@ -1174,13 +1289,15 @@ class MdViewerApp(App):
             return
         await self._show_captured_diff(source.label, text)
 
-    async def _show_captured_diff(self, label: str, text: str) -> None:
+    async def _show_captured_diff(self, label: str, text: str, *, prelude: str = "") -> None:
         """Render captured diff *text* as a transient, no-backing-file view.
 
         Like the stdin path, the raw text is stashed in the tempdir so the rest of
         the pipeline has a real `_md_path`; `_transient_view` then suppresses file
         watching and `:w` (there's nothing to save back to). The previous document
-        is pushed onto the history stack so `Backspace` returns to it.
+        is pushed onto the history stack so `Backspace` returns to it. *prelude*
+        (optional Markdown, e.g. a commit header) is prepended to the scaffolded
+        source so it renders above the delta diff.
         """
         viewer = self.query_one(MarkdownViewer)
         if self._md_path is not None:
@@ -1191,7 +1308,7 @@ class MdViewerApp(App):
         self._transient_view = True
         self._display_name = label
         self.title = label
-        await self._render_source(self._source_for(text))
+        await self._render_source(prelude + self._source_for(text))
         # No file to diff against: the buffer is never dirty, so `q` quits clean.
         self._disk_baseline = viewer.document.source
         self._undo_stack.clear()
@@ -1340,6 +1457,10 @@ class MdViewerApp(App):
             self.action_help()
         elif command == "open":
             self.action_quick_open()
+        elif command == "grep":
+            self.action_project_grep()
+        elif command == "log":
+            self.action_git_log()
         elif raw.strip():
             self.notify(f"未知のコマンド: :{raw.strip()}", severity="warning")
 

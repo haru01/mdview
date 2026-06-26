@@ -13,7 +13,9 @@ from __future__ import annotations
 # `:h`/`:help` open help. The AI edit loop adds `:w` (write the buffer), `:q!`
 # (force quit, discarding unsaved edits), `:wq` (write then quit), and `:undo`
 # (revert the last applied edit). `:e`/`:edit`/`:open`/`:o` open the quick-open
-# fuzzy finder (also bound to Ctrl+P).
+# fuzzy finder (also bound to Ctrl+O), `:grep`/`:g` open the project-wide grep
+# finder (also bound to Ctrl+G), and `:log`/`:gitlog` open the commit browser
+# (also bound to `l` / reachable via the `--log` CLI flag).
 _COMMANDS = {
     "q": "quit",
     "quit": "quit",
@@ -31,6 +33,10 @@ _COMMANDS = {
     "edit": "open",
     "open": "open",
     "o": "open",
+    "grep": "grep",
+    "g": "grep",
+    "log": "log",
+    "gitlog": "log",
 }
 
 

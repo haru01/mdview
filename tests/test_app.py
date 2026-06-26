@@ -224,6 +224,73 @@ def test_ctrl_p_opens_quick_open_and_enter_navigates(tmp_path) -> None:
     asyncio.run(driver())
 
 
+def test_ctrl_g_opens_grep_then_enter_opens_file_and_activates_search(tmp_path) -> None:
+    """Ctrl+G opens the grep finder; picking a hit opens that file and runs the
+    query as an in-document search."""
+    import asyncio
+
+    from mdview.project_grep import ProjectGrepScreen
+
+    (tmp_path / "README.md").write_text("# Readme\nplain content\n")
+    (tmp_path / "guide.md").write_text("# Guide\nUNIQUEWORD lives here\n")
+
+    async def driver() -> None:
+        app = MdViewerApp(tmp_path / "README.md", root_dir=tmp_path)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            # A root_dir launch auto-opens the quick-open palette; close it first.
+            await pilot.press("escape")
+            await pilot.pause()
+
+            await pilot.press("ctrl+g")
+            await pilot.pause()
+            assert isinstance(app.screen, ProjectGrepScreen)
+
+            for ch in "UNIQUEWORD":
+                await pilot.press(ch)
+            await pilot.pause()
+
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+                if not isinstance(app.screen, ProjectGrepScreen):
+                    break
+
+            # Opened the file the hit lives in, and activated the search there.
+            assert app._md_path == (tmp_path / "guide.md").resolve()
+            assert app._search_query == "UNIQUEWORD"
+            assert app._search_hits, "the query should be an active in-document search"
+
+    asyncio.run(driver())
+
+
+def test_colon_grep_command_opens_grep(tmp_path) -> None:
+    """`:grep` opens the same finder as Ctrl+G."""
+    import asyncio
+
+    from mdview.project_grep import ProjectGrepScreen
+
+    (tmp_path / "README.md").write_text("# r\nword\n")
+
+    async def driver() -> None:
+        app = MdViewerApp(tmp_path / "README.md", root_dir=tmp_path)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            # A root_dir launch auto-opens the quick-open palette; close it first.
+            await pilot.press("escape")
+            await pilot.pause()
+            await pilot.press("colon")
+            for ch in "grep":
+                await pilot.press(ch)
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, ProjectGrepScreen)
+
+    asyncio.run(driver())
+
+
 def test_quick_open_lists_diff_sources_only_in_git_repo(tmp_path) -> None:
     """The palette offers the git/gh diff sources only inside a git repo."""
     import asyncio
@@ -286,6 +353,207 @@ def test_quick_open_diff_source_renders_captured_diff(tmp_path, monkeypatch) -> 
             assert list(app.query(DiffHunk)), "expected a DiffHunk from the captured diff"
             assert app._transient_view
             assert not app._is_dirty()  # nothing to save back to
+
+    asyncio.run(driver())
+
+
+def test_log_launch_opens_commit_browser_and_pick_shows_diff(tmp_path, monkeypatch) -> None:
+    """`--log` (open_log=True) opens the commit browser; picking a commit renders
+    its `git show` diff delta-style as a transient view."""
+    import asyncio
+
+    import mdview.gitlog as gitlog
+    from mdview.commit_log import CommitLogScreen
+    from mdview.diff_widget import DiffHunk
+    from mdview.gitlog import Commit
+
+    commits = [
+        Commit(hash="aaaa1111", short="aaaa111", author="Alice", date="2 days ago", subject="first"),
+        Commit(hash="bbbb2222", short="bbbb222", author="Bob", date="1 hour ago", subject="second"),
+    ]
+    sample = (FIXTURES / "sample.diff").read_text()
+    monkeypatch.setattr(gitlog, "capture_log", lambda limit: commits)
+    monkeypatch.setattr(gitlog, "capture_show", lambda commit_hash: sample)
+
+    async def driver() -> None:
+        app = MdViewerApp(None, root_dir=tmp_path, open_log=True)
+        async with app.run_test(size=(80, 24)) as pilot:
+            for _ in range(20):
+                await pilot.pause()
+                if isinstance(app.screen, CommitLogScreen):
+                    break
+            assert isinstance(app.screen, CommitLogScreen), "commit browser should open"
+
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+                if list(app.query(DiffHunk)):
+                    break
+            assert list(app.query(DiffHunk)), "picking a commit should show its diff"
+            assert app._transient_view
+            assert not app._is_dirty()
+
+    asyncio.run(driver())
+
+
+def test_log_launch_keeps_sidebar_closed(tmp_path, monkeypatch) -> None:
+    """`--log` opens the commit browser over an empty viewer; the file-tree
+    sidebar stays closed (it's only mounted on first `e`)."""
+    import asyncio
+
+    import mdview.gitlog as gitlog
+    from mdview.commit_log import CommitLogScreen
+    from mdview.gitlog import Commit
+
+    commits = [
+        Commit(hash="aaaa1111", short="aaaa111", author="Alice", date="2 days ago", subject="first"),
+    ]
+    monkeypatch.setattr(gitlog, "capture_log", lambda limit: commits)
+
+    async def driver() -> None:
+        app = MdViewerApp(None, root_dir=tmp_path, open_log=True)
+        async with app.run_test(size=(80, 24)) as pilot:
+            for _ in range(20):
+                await pilot.pause()
+                if isinstance(app.screen, CommitLogScreen):
+                    break
+            assert isinstance(app.screen, CommitLogScreen), "commit browser should open"
+            assert not app.query("#sidebar"), "sidebar should not be mounted on --log launch"
+
+    asyncio.run(driver())
+
+
+def test_l_key_opens_commit_browser(tmp_path, monkeypatch) -> None:
+    """The `l` shortcut opens the commit browser, just like `--log` / `:log`."""
+    import asyncio
+
+    import mdview.gitlog as gitlog
+    from mdview.commit_log import CommitLogScreen
+    from mdview.gitlog import Commit
+
+    commits = [
+        Commit(hash="aaaa1111", short="aaaa111", author="Alice", date="2 days ago", subject="first"),
+    ]
+    monkeypatch.setattr(gitlog, "capture_log", lambda limit: commits)
+
+    doc = tmp_path / "README.md"
+    doc.write_text("# Hello\n\nbody\n")
+
+    async def driver() -> None:
+        app = MdViewerApp(doc, root_dir=tmp_path)
+        async with app.run_test(size=(80, 24)) as pilot:
+            # Dismiss the auto-opened quick-open palette (directory launch).
+            await pilot.press("escape")
+            await pilot.pause()
+            await pilot.press("l")
+            for _ in range(20):
+                await pilot.pause()
+                if isinstance(app.screen, CommitLogScreen):
+                    break
+            assert isinstance(app.screen, CommitLogScreen), "`l` should open the commit browser"
+
+    asyncio.run(driver())
+
+
+def test_commit_show_with_metadata_renders_colored_diff_and_header(tmp_path, monkeypatch) -> None:
+    """`git show` output (commit metadata + diff) renders the metadata as a Markdown
+    header and the diff delta-style — proving the diff isn't shown as plain prose."""
+    import asyncio
+
+    import mdview.gitlog as gitlog
+    from textual.widgets._markdown import MarkdownH1, MarkdownH2
+    from mdview.commit_log import CommitLogScreen
+    from mdview.diff_widget import DiffHunk
+    from mdview.gitlog import Commit
+
+    git_show = (
+        "commit aaaa1111bbbb2222\n"
+        "Author: Alice <alice@example.com>\n"
+        "Date:   Mon Jun 16 10:00:00 2026 +0900\n"
+        "\n"
+        "    feat: add the thing\n"
+        "\n"
+        "    body explaining it\n"
+        "\n"
+        "diff --git a/foo.py b/foo.py\n"
+        "index 111..222 100644\n"
+        "--- a/foo.py\n"
+        "+++ b/foo.py\n"
+        "@@ -1,2 +1,2 @@\n"
+        "-old line\n"
+        "+new line\n"
+        " context\n"
+    )
+    commit = Commit(
+        hash="aaaa1111bbbb2222", short="aaaa111", author="Alice", date="2 days ago", subject="feat: add the thing"
+    )
+    monkeypatch.setattr(gitlog, "capture_log", lambda limit: [commit])
+    monkeypatch.setattr(gitlog, "capture_show", lambda commit_hash: git_show)
+    # With claude present, _inject_section_insights adds the 💡 AI button.
+    monkeypatch.setattr("mdview.app.find_claude", lambda: "claude")
+
+    async def driver() -> None:
+        app = MdViewerApp(None, root_dir=tmp_path, open_log=True)
+        async with app.run_test(size=(80, 24)) as pilot:
+            for _ in range(20):
+                await pilot.pause()
+                if isinstance(app.screen, CommitLogScreen):
+                    break
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+                if list(app.query(DiffHunk)):
+                    break
+
+            # The diff is delta-coloured (DiffHunk), not plain text.
+            assert list(app.query(DiffHunk)), "commit diff should render delta-style"
+            # The commit message is a Markdown header above it.
+            h1s = [str(h._content) for h in app.query(MarkdownH1)]
+            assert any("feat: add the thing" in t for t in h1s), "commit subject H1 missing"
+            # The per-file `## @ file` heading exists and carries the 💡 AI-insight
+            # button (added by _inject_section_insights when claude is present).
+            file_headings = [
+                h for h in app.query(MarkdownH2) if h._content.plain.startswith("@ ")
+            ]
+            assert file_headings, "diff file heading missing"
+            assert all(
+                h._content.plain.rstrip().endswith("💡") for h in file_headings
+            ), "diff file heading should carry the 💡 AI-insight button"
+            assert app._diff_files, "the diff model should be parsed for hunk injection"
+
+    asyncio.run(driver())
+
+
+def test_colon_log_command_opens_commit_browser(tmp_path, monkeypatch) -> None:
+    """`:log` opens the same commit browser."""
+    import asyncio
+
+    import mdview.gitlog as gitlog
+    from mdview.commit_log import CommitLogScreen
+    from mdview.gitlog import Commit
+
+    monkeypatch.setattr(
+        gitlog,
+        "capture_log",
+        lambda limit: [Commit(hash="h", short="h", author="A", date="now", subject="s")],
+    )
+
+    (tmp_path / "README.md").write_text("# r\n")
+
+    async def driver() -> None:
+        app = MdViewerApp(tmp_path / "README.md")  # no root_dir → no auto quick-open
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("colon")
+            for ch in "log":
+                await pilot.press(ch)
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+                if isinstance(app.screen, CommitLogScreen):
+                    break
+            assert isinstance(app.screen, CommitLogScreen)
 
     asyncio.run(driver())
 
