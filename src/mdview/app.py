@@ -66,6 +66,13 @@ from mdview.selection import (
 )
 from mdview.svg import SvgRenderError, extract_svgs, rasterize_svg
 from mdview.toc import TocScreen
+from mdview.wiki import (
+    WikiIndex,
+    frontmatter_display,
+    parse_wikilinks,
+    split_frontmatter,
+)
+from mdview.wiki_tag import WikiPickScreen
 
 
 # Section insight (`##` lightbulb → treasure): the inline marker's three states
@@ -107,6 +114,16 @@ def _insight_get_selection(self: MarkdownHeader, selection: Selection):
     return selection.extract(text), "\n"
 
 
+def _wikilink_get_selection(self: MarkdownBlock, selection: Selection):
+    """Instance override for a block whose `[[wikilinks]]` were swapped for
+    clickable spans: select from the *original* content so copied/AI'd text keeps
+    the raw `[[name]]` syntax (a valid wiki link) rather than the rendered alias.
+    """
+    base = getattr(self, "_wikilink_base", None)
+    text = base.plain if base is not None else str(self._render())
+    return selection.extract(text), "\n"
+
+
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 _MARKDOWN_EXTS = {".md", ".markdown", ".mdown", ".mkd"}
 
@@ -116,6 +133,51 @@ _MARKDOWN_EXTS = {".md", ".markdown", ".mdown", ".mkd"}
 # `Content.highlight_regex` and Rich `Text.highlight_regex` (the DiffHunk path).
 _MATCH_HL = "on #335c46"
 _CURRENT_HL = "bold on #4ebf71"
+
+# `[[wikilink]]` link styling: coral underline for a resolvable link (the theme's
+# accent), a dim struck grey for a broken one (no such file in the tree) so a
+# missing target reads as "not created yet" at a glance.
+_WIKILINK_STYLE = "underline #d97757"
+_WIKILINK_BROKEN = "dim strike #b0705a"
+
+
+def _action_arg(value: str) -> str:
+    """Escape a string for embedding in a Content `@click` action's arg list."""
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def _frontmatter_content(display) -> Content | None:
+    """Build the frontmatter panel's Content: title, a dim scalar meta line, and
+    clickable tag chips (→ `app.tag_files`) and source links (→ `app.wikilink`).
+    Returns None when there is nothing worth showing."""
+    lines: list[Content] = []
+    if display.title:
+        lines.append(Content(display.title).stylize("bold #d97757"))
+    if display.meta_line:
+        lines.append(Content(display.meta_line).stylize("dim"))
+    if display.tags:
+        parts: list[Content] = [Content("🏷 ")]
+        for i, tag in enumerate(display.tags):
+            if i:
+                parts.append(Content(" "))
+            chip = Content(f"#{tag}").stylize(
+                f"@click=app.tag_files('{_action_arg(tag)}')"
+            )
+            parts.append(chip.stylize("#4ebf71 underline"))
+        lines.append(Content("").join(parts))
+    if display.sources:
+        parts = [Content("📄 ")]
+        for i, src in enumerate(display.sources):
+            if i:
+                parts.append(Content(" "))
+            link = Content(src).stylize(
+                f"@click=app.wikilink('{_action_arg(src)}','')"
+            )
+            parts.append(link.stylize(_WIKILINK_STYLE))
+        lines.append(Content("").join(parts))
+    if not lines:
+        return None
+    return Content("\n").join(lines)
 
 # Wall-clock budget for one search scan. A catastrophic-backtracking pattern
 # (e.g. `(a+)+$`) would otherwise hang the UI thread, so each `finditer` is given
@@ -136,6 +198,17 @@ class _MdViewer(MarkdownViewer):
         # prevent_default() suppresses MarkdownViewer's base handler in the
         # same MRO dispatch, so the message still bubbles up to the App.
         message.prevent_default()
+
+
+class _FrontmatterPanel(Static):
+    """A read-only panel rendering a document's YAML frontmatter.
+
+    Injected at the top of the document (in place of the raw `---…---` block,
+    which is stripped from the source before rendering). Its tag chips and source
+    links are `@click` spans routed to the app (`action_tag_files` /
+    `action_wikilink`), so the whole panel is styled *and* clickable without a
+    nested Markdown widget.
+    """
 
 
 class _MdTree(DirectoryTree):
@@ -313,6 +386,16 @@ class MdViewerApp(App):
         self._disk_baseline: str = ""
         self._undo_stack: list[str] = []
         self._editing: bool = False
+        # Wiki state. Frontmatter is peeled off the source before rendering (so
+        # `document.source` stays == the file minus frontmatter and the edit loop
+        # is unaffected) and kept here to reconstruct the file on `:w`.
+        # `_frontmatter_raw` is the exact leading `---…---` text (or None);
+        # `_frontmatter_meta` the parsed mapping. `_wiki_index` resolves
+        # `[[wikilinks]]`/tags across the tree, rebuilt lazily per root.
+        self._frontmatter_raw: str | None = None
+        self._frontmatter_meta: dict = {}
+        self._wiki_index: WikiIndex | None = None
+        self._wiki_index_root: Path | None = None
         # File-watch state: a resident asyncio task consuming `awatch` over the
         # viewed file's directory; an external write to the file triggers an
         # in-place reload. A plain task (not a Textual worker) because it never
@@ -395,7 +478,12 @@ class MdViewerApp(App):
         # A pre-supplied diff model (the CLI diff path) means `text` is already
         # the scaffolded Markdown — render as-is. Otherwise detect a diff from the
         # raw text so `mdview x.diff` renders delta-style too.
-        source = text if self._diff_files is not None else self._source_for(text)
+        if self._diff_files is not None:
+            self._frontmatter_raw = None
+            self._frontmatter_meta = {}
+            source = text
+        else:
+            source = self._prepare_source(text)
         await self._render_source(source)
         self._disk_baseline = text
         self._start_watching()
@@ -494,6 +582,111 @@ class MdViewerApp(App):
                 continue
             await viewer.document.mount(EventFlow(flow, source=fence.code), after=fence)
             await fence.remove()
+
+    def _get_wiki_index(self) -> WikiIndex:
+        """The wiki index for the current root, built (and cached) on demand.
+
+        Rebuilt when the root changes (navigating into a different tree). Best-
+        effort: a file created after the build won't resolve until the next
+        rebuild, which is fine for link/tag lookups.
+        """
+        root = (self._root_dir or self._md_dir).resolve()
+        if self._wiki_index is None or self._wiki_index_root != root:
+            self._wiki_index = WikiIndex.build(root)
+            self._wiki_index_root = root
+        return self._wiki_index
+
+    async def _inject_wikilinks(self) -> None:
+        """Swap each `[[target#anchor|alias]]` for a clickable link span.
+
+        The source is left untouched (the raw `[[…]]` stays in `document.source`,
+        so editing/saving round-trips); only each block's *rendered* Content is
+        rebuilt, slicing the original around the wikilink so existing styling
+        survives. A link to a file that exists routes to it (`app.wikilink`);
+        a broken link (no such file in the tree) is dimmed/struck. The clean
+        pre-swap Content is stashed on `_wikilink_base` so copy/AI keep the raw
+        syntax (a `get_selection` override reads it).
+        """
+        viewer = self.query_one(MarkdownViewer)
+        index = self._get_wiki_index()
+        for block in list(viewer.document.query(MarkdownBlock)):
+            if isinstance(block, MarkdownFence):
+                continue  # don't rewrite `[[…]]` inside code
+            content = getattr(block, "_content", None)
+            if content is None:
+                continue
+            links = parse_wikilinks(content.plain)
+            if not links:
+                continue
+            block._wikilink_base = content
+            block.get_selection = types.MethodType(_wikilink_get_selection, block)
+            parts: list[Content] = []
+            pos = 0
+            for link in links:
+                parts.append(content[pos:link.start])
+                broken = not index.resolve(link.target)
+                span = Content(link.alias).stylize(
+                    f"@click=app.wikilink('{_action_arg(link.target)}',"
+                    f"'{_action_arg(link.anchor)}')"
+                )
+                span = span.stylize(_WIKILINK_BROKEN if broken else _WIKILINK_STYLE)
+                parts.append(span)
+                pos = link.end
+            parts.append(content[pos:])
+            block.set_content(Content("").join(parts))
+
+    async def _inject_frontmatter(self) -> None:
+        """Render the peeled-off frontmatter as a panel at the top of the document.
+
+        No-op when the document has no frontmatter. Tag chips and source links are
+        `@click` spans (→ `action_tag_files` / `action_wikilink`), so the panel is
+        clickable without a nested Markdown widget.
+        """
+        if not self._frontmatter_meta:
+            return
+        content = _frontmatter_content(frontmatter_display(self._frontmatter_meta))
+        if content is None:
+            return
+        viewer = self.query_one(MarkdownViewer)
+        panel = _FrontmatterPanel(content, id="frontmatter-panel")
+        children = viewer.document.children
+        if children:
+            await viewer.document.mount(panel, before=children[0])
+        else:
+            await viewer.document.mount(panel)
+
+    def action_wikilink(self, target: str, anchor: str = "") -> None:
+        """Handle a `[[wikilink]]` click: navigate, disambiguate, or report broken."""
+        matches = self._get_wiki_index().resolve(target)
+        if not matches:
+            self.notify(f"リンク切れ: [[{target}]]", severity="warning")
+            return
+        if len(matches) == 1:
+            self.run_worker(self._navigate_to(matches[0], anchor), exclusive=True)
+            return
+        root = (self._root_dir or self._md_dir).resolve()
+
+        def _picked(path: Path | None) -> None:
+            if path is not None:
+                self.run_worker(self._navigate_to(path, anchor), exclusive=True)
+
+        self.push_screen(
+            WikiPickScreen(matches, root, f"[[{target}]] (複数候補)"), _picked
+        )
+
+    def action_tag_files(self, tag: str) -> None:
+        """Handle a tag-chip click: open a picker of files carrying that tag."""
+        matches = self._get_wiki_index().files_with_tag(tag)
+        if not matches:
+            self.notify(f"タグ '{tag}' のファイルはありません")
+            return
+        root = (self._root_dir or self._md_dir).resolve()
+
+        def _picked(path: Path | None) -> None:
+            if path is not None:
+                self.run_worker(self._navigate_to(path, ""), exclusive=True)
+
+        self.push_screen(WikiPickScreen(matches, root, f"タグ: {tag}"), _picked)
 
     async def _inject_section_insights(self) -> None:
         """Add a clickable 💡 to the right of each `##` heading.
@@ -820,7 +1013,7 @@ class MdViewerApp(App):
             self._disk_baseline = text
             return
         was_dirty = self._is_dirty()
-        await self._rerender_preserving_scroll(self._source_for(text))
+        await self._rerender_preserving_scroll(self._prepare_source(text))
         self._disk_baseline = text
         self._undo_stack.clear()
         if was_dirty:
@@ -946,6 +1139,8 @@ class MdViewerApp(App):
         await self._inject_mermaid()
         await self._inject_diff_hunks()
         await self._inject_event_flows()
+        await self._inject_wikilinks()
+        await self._inject_frontmatter()
         await self._inject_section_insights()
 
     async def _remove_injected_widgets(self) -> None:
@@ -959,9 +1154,28 @@ class MdViewerApp(App):
         sweep only sees standalone (Mermaid) images.
         """
         doc = self.query_one(MarkdownViewer).document
-        for widget_type in (DiffHunk, EventFlow, ZoomableImage, Image):
+        for widget_type in (_FrontmatterPanel, DiffHunk, EventFlow, ZoomableImage, Image):
             for widget in list(doc.query(widget_type)):
                 await widget.remove()
+
+    def _prepare_source(self, text: str) -> str:
+        """Peel frontmatter off raw file *text*, then hand the body to `_source_for`.
+
+        Stores the frontmatter prefix/mapping so the panel can render it and `:w`
+        can reconstruct the file. Keeping the render source == body (not the raw
+        file) means `document.source` stays a faithful slice of the file, so the
+        edit loop / dirty tracking need no changes.
+        """
+        split = split_frontmatter(text)
+        self._frontmatter_raw = split.raw_prefix
+        self._frontmatter_meta = split.meta
+        return self._source_for(split.body)
+
+    def _current_full_source(self) -> str:
+        """The full document as it would be written to disk: the (untouched)
+        frontmatter prefix + the live body (`document.source`)."""
+        body = self.query_one(MarkdownViewer).document.source
+        return (self._frontmatter_raw or "") + body
 
     def _source_for(self, text: str) -> str:
         """Return the source to render for raw file *text*, updating `_diff_files`.
@@ -988,7 +1202,7 @@ class MdViewerApp(App):
         self._md_dir = path.parent
         self.title = path.name
         self._transient_view = False  # a real file again (clears a diff view)
-        await self._render_source(self._source_for(text))
+        await self._render_source(self._prepare_source(text))
         # Navigating to a new document starts a fresh edit session.
         self._disk_baseline = text
         self._undo_stack.clear()
@@ -1308,6 +1522,10 @@ class MdViewerApp(App):
         self._transient_view = True
         self._display_name = label
         self.title = label
+        # A captured diff has no frontmatter; clear any carried over from the
+        # previous document so `:w`/dirty reconstruction stays consistent.
+        self._frontmatter_raw = None
+        self._frontmatter_meta = {}
         await self._render_source(prelude + self._source_for(text))
         # No file to diff against: the buffer is never dirty, so `q` quits clean.
         self._disk_baseline = viewer.document.source
@@ -1465,8 +1683,12 @@ class MdViewerApp(App):
             self.notify(f"未知のコマンド: :{raw.strip()}", severity="warning")
 
     def _is_dirty(self) -> bool:
-        """Whether the live buffer differs from what's on disk (`:w` baseline)."""
-        return self.query_one(MarkdownViewer).document.source != self._disk_baseline
+        """Whether the live buffer differs from what's on disk (`:w` baseline).
+
+        Compares the *full* source (frontmatter + body) against the baseline, so
+        an unchanged frontmatter-carrying file reads as clean even though its body
+        source is only a slice of what's on disk."""
+        return self._current_full_source() != self._disk_baseline
 
     def _is_ephemeral(self) -> bool:
         """Whether the current view has no real file behind it — stdin or a
@@ -1497,7 +1719,7 @@ class MdViewerApp(App):
         if self._md_path is None:
             self.notify("ファイルが開かれていません", severity="warning")
             return False
-        source = self.query_one(MarkdownViewer).document.source
+        source = self._current_full_source()
         try:
             self._md_path.write_text(source, encoding="utf-8")
         except OSError as e:

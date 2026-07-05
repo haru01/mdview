@@ -105,6 +105,17 @@ MarkdownFence {
     max-height: initial;
 }
 
+/* The wiki frontmatter panel: a bordered box above the body, holding the
+ * document's metadata (title, dates, clickable tags/sources). */
+#frontmatter-panel {
+    background: $boost;
+    border: round $orange 40%;
+    padding: 0 1;
+    margin: 0 0 1 0;
+    width: 1fr;
+    height: auto;
+}
+
 /* Inline emphasis (bold / italic / inline code) is green; orange is reserved
  * for headings and block structure so body text isn't dominated by orange. */
 MarkdownBlock > .code_inline {
