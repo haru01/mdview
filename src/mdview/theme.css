@@ -315,6 +315,24 @@ CommitLogScreen {
     background: $panel;
 }
 
+/* Wikilink hover preview: a floating peek shown while the mouse rests on a
+ * [[wikilink]] (see _WikiHoverPopup / on_mouse_move). On the top _tooltips
+ * layer, positioned at the cursor; `constrain` keeps it on-screen. Clamped +
+ * overflow hidden — a peek of the note body (frontmatter stripped). */
+#wiki-hover {
+    layer: _tooltips;
+    display: none;
+    width: auto;
+    height: auto;
+    max-width: 60;
+    max-height: 20;
+    overflow: hidden;
+    padding: 0 1;
+    background: $panel;
+    border: round $orange;
+    constrain: inside inflect;
+}
+
 /* ===== Help modal =====
  * `?` / `:h` open a centered cheat-sheet of the key map (see help.py).
  */
