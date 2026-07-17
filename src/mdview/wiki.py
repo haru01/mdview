@@ -36,6 +36,26 @@ _FRONTMATTER_RE = re.compile(r"\A---[ \t]*\r?\n(.*?\r?\n)?---[ \t]*\r?\n", re.DO
 # stops at ``#``/``|``/``]``; anchor stops at ``|``/``]``; alias is the rest.
 _WIKILINK_RE = re.compile(r"\[\[([^\]#|]+)(?:#([^\]|]+))?(?:\|([^\]]+))?\]\]")
 
+# The target inside a rendered wikilink's `@click=app.wikilink('target','anchor')`
+# action (args escaped by app._action_arg). Used by the hover handler to recover
+# the target from the style meta under the cursor.
+_ACTION_TARGET_RE = re.compile(r"app\.wikilink\('((?:[^'\\]|\\.)*)'")
+
+
+def wikilink_action_target(action: str | None) -> str | None:
+    """Recover the target from a wikilink ``@click`` action string, else ``None``.
+
+    Inverse of the ``app.wikilink('target', …)`` span that ``_inject_wikilinks``
+    stylizes onto a link (``app._action_arg`` escaped the argument). Any other
+    action (a tag chip, a section-insight marker, …) returns ``None``.
+    """
+    if not action:
+        return None
+    match = _ACTION_TARGET_RE.search(action)
+    if match is None:
+        return None
+    return re.sub(r"\\(.)", r"\1", match.group(1))
+
 
 @dataclass(frozen=True)
 class FrontmatterSplit:
