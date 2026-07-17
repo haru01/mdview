@@ -44,13 +44,17 @@ Wraps Textual's `MarkdownViewer`. The core pattern: load the document, then **po
 
 **Auto-reload on external change.** `_start_watching` (called from `on_mount` and re-called from `_load_file` on every navigation) runs `_watch_file` as a resident `asyncio.Task` (`_watch_task`) — **not** a Textual worker, because it loops forever over `watchfiles.awatch` and a never-completing worker would hang `App.workers.wait_for_complete()`. It watches the viewed file's **parent dir** (`_md_dir`) and filters to `_md_path` so an editor's atomic-rename save (which swaps the inode) is still caught; on a matching change it spawns `_reload_from_disk` as an `exclusive=True` worker (so it can't race the navigation/edit workers' `document.update`). The reload always wins over unsaved AI edits (re-reads disk, `_rerender_preserving_scroll` to keep scroll y, clears `_undo_stack`, resets `_disk_baseline`) — but a content-identical read (a `touch`, or our own `:w` echoing back) is a no-op beyond resyncing the baseline, so the view never flashes for our own write. stdin isn't watched (no real file); `on_unmount` cancels the task so `awatch`'s background thread doesn't outlive the app. Requires the `watchfiles` dependency (OS FS events, with watchfiles' own polling fallback when unavailable).
 
-**Keybindings (less/delta-style, see `BINDINGS`):** quit is `q` or `:q`; **`Esc` never quits** — it cancels the current transient state (`action_cancel`: stop editing the command line, clear an active search, and drop the current selection — resetting the `v`/click ladder so the next selection starts small) and is a no-op when idle. `/` and `:` open one **unified command line** (`_CommandLine` in the docked `#cmdline-bar`), less/vim-style: a **fixed, non-editable `/`/`:` prompt label** (`#cmdline-prompt`) sits left of an input that holds *only* the pattern/command. The mode is tracked in `_cmdline_mode` (set by `_open_cmdline` when the line opens), **not** parsed from the first char — this is deliberate: Textual's `Input` selects-all on focus, so a prefix kept *in* the value would be overwritten by the first keystroke (a typed `:q` → `q` → dispatched as a search, silently breaking every command). To switch modes, Esc and reopen with the other key (no mid-edit switching). `on_input_submitted` → `_run_cmdline` dispatches on `_cmdline_mode`: command → `command.py:parse_command` (`:q`/`:quit` quit *through the unsaved-changes guard*; `:q!` force-quit; `:w` write; `:wq`/`:x` write-then-quit; `:undo` revert the last AI edit; `:h`/`:help` help), search → the query is run. Scrolling follows less: `j`/`k` lines, `d`/`u` half-page, `f`/`b` full page (so **`b` is page-up, not back** — link-history back moved to `Backspace`/`←`), `g`/`G` top/bottom. Search match nav is `n`/`N`. Structural nav: **`Space`/`Shift+Space`** are the ergonomic context-aware pair (`action_next_section`/`prev_section` → headings in prose, headings + `@@` hunks in a diff, via `_section_targets`); `]`/`[` (headings, = files in a diff) and `}`/`{` (diff hunks) are the explicit always-available keys, and `[`/`{` are the reliable "previous" since many terminals can't distinguish `Shift+Space` from `Space`. `Ctrl+]`/`Ctrl+[` narrow to level-2 (`##`) headings only (`action_next_h2`/`prev_h2` → `_headings_at_level(2)`, filtering on each `MarkdownH*`'s `LEVEL`). Note `Ctrl+[` is the ESC byte in legacy terminals (so it triggers `cancel`, not prev-H2, unless the kitty keyboard protocol is active); `[` stays the reliable all-heading prev. `h` is Ask AI and `w` is AI-edit-selection (both need `claude`); `y` copies the current selection to the clipboard (`action_copy_selection` → Textual's OSC52 `copy_to_clipboard`, reusing `screen.get_selected_text()`; no-op + notice when nothing is selected); `e` toggles the file-tree sidebar (below); `l` (also `--log`/`:log`) opens the commit browser (`action_git_log`); `?` or `:h` open the help screen (`help.py:HelpScreen`, a custom grouped cheat-sheet — the viewer has no permanent footer). Punctuation bindings use Textual key *names* (`]`=`right_square_bracket`, `}`=`right_curly_bracket`, `:`=`colon`).
+**Keybindings (less/delta-style, see `BINDINGS`):** quit is `q` or `:q`; **`Esc` never quits** — it cancels the current transient state (`action_cancel`: stop editing the command line, clear an active search, and drop the current selection — resetting the `v`/click ladder so the next selection starts small) and is a no-op when idle. `/` and `:` open one **unified command line** (`_CommandLine` in the docked `#cmdline-bar`), less/vim-style: a **fixed, non-editable `/`/`:` prompt label** (`#cmdline-prompt`) sits left of an input that holds *only* the pattern/command. The mode is tracked in `_cmdline_mode` (set by `_open_cmdline` when the line opens), **not** parsed from the first char — this is deliberate: Textual's `Input` selects-all on focus, so a prefix kept *in* the value would be overwritten by the first keystroke (a typed `:q` → `q` → dispatched as a search, silently breaking every command). To switch modes, Esc and reopen with the other key (no mid-edit switching). `on_input_submitted` → `_run_cmdline` dispatches on `_cmdline_mode`: command → `command.py:parse_command` (`:q`/`:quit` quit *through the unsaved-changes guard*; `:q!` force-quit; `:w` write; `:wq`/`:x` write-then-quit; `:undo` revert the last AI edit; `:h`/`:help` help), search → the query is run. Scrolling follows less: `j`/`k` lines, `d`/`u` half-page, `f`/`b` full page (so **`b` is page-up, not back** — link-history back moved to `Backspace`/`←`), `g`/`G` top/bottom. Search match nav is `n`/`N`. Structural nav: **`Space`/`Shift+Space`** are the ergonomic context-aware pair (`action_next_section`/`prev_section` → headings in prose, headings + `@@` hunks in a diff, via `_section_targets`); `]`/`[` (headings, = files in a diff) and `}`/`{` (diff hunks) are the explicit always-available keys, and `[`/`{` are the reliable "previous" since many terminals can't distinguish `Shift+Space` from `Space`. `Ctrl+]`/`Ctrl+[` narrow to level-2 (`##`) headings only (`action_next_h2`/`prev_h2` → `_headings_at_level(2)`, filtering on each `MarkdownH*`'s `LEVEL`). Note `Ctrl+[` is the ESC byte in legacy terminals (so it triggers `cancel`, not prev-H2, unless the kitty keyboard protocol is active); `[` stays the reliable all-heading prev. `h` is Ask AI and `w` is AI-edit-selection (both need `claude`); `y` copies the current selection to the clipboard (`action_copy_selection` → Textual's OSC52 `copy_to_clipboard`, reusing `screen.get_selected_text()`; no-op + notice when nothing is selected); `e` toggles the file-tree sidebar (below); `l` (also `--log`/`:log`) opens the commit browser (`action_git_log`); `p` opens the wikilink peek picker (`action_wiki_peek`, see the wikilinks section); `?` or `:h` open the help screen (`help.py:HelpScreen`, a custom grouped cheat-sheet — the viewer has no permanent footer). Punctuation bindings use Textual key *names* (`]`=`right_square_bracket`, `}`=`right_curly_bracket`, `:`=`colon`).
 
 **File-tree sidebar (`e`).** `_MdTree` (a `DirectoryTree` subclass whose `filter_paths` keeps dirs + `filetree.is_viewable` files: `.md`/`.markdown`/`.diff`/`.patch`) sits left of the viewer in `#main-row`. It's **lazily mounted** (`_ensure_sidebar`, idempotent) — a `DirectoryTree` runs a resident directory-loader worker that never completes, which would hang `App.workers.wait_for_complete()` (the same trap the file-watch task avoids), so on a single-file launch the tree isn't in the DOM until `e` first opens it. `can_focus` tracks `display` (a hidden/absent tree must not steal the App's initial keyboard focus, or the viewer's App-binding keys break). Selecting a file (`on_directory_tree_file_selected`) routes through `_navigate_to` (history + diff-aware), then drops focus back to the viewer. A directory launch (`mdview <dir>`) does **not** auto-show the tree — it renders the initial file (README) and auto-opens the quick-open palette preselected to it (see below), so picking what to read is the first move; the tree stays hidden until `e`. The exception is an **empty** directory (no viewable file → `_md_path` is `None`, the only case it's None): there `on_mount` mounts+focuses the tree and shows a "pick a file" notice, since the palette would be empty. `filetree.py` (`is_viewable`, `initial_file`) is pure/framework-free.
 
 **Quick-open fuzzy finder (`Ctrl+O` / `:e`).** A fzf/VS-Code-style picker as a faster alternative to scrolling the sidebar tree. `Ctrl+O` (bound on the App; `ENABLE_COMMAND_PALETTE = False` keeps Ctrl+P from opening Textual's unused built-in palette) and `:e`/`:open`/`:o` both call `action_quick_open`, which builds the picker rows with `quickopen.build_entries`: the viewable files under `_root_dir` (else `_md_dir`) from `quickopen.list_viewable_files`, **plus** the git/gh diff sources (`quickopen.DIFF_SOURCES` — `git diff` / `git diff --staged` / `gh pr diff`) when `quickopen.is_git_repo(root)` (it walks up for a `.git` entry, no subprocess). Each row is a `QuickOpenEntry(label, payload)` where payload is an absolute file `Path` or a `DiffSource`. The modal (`quick_open.py:QuickOpenScreen`) is an `Input` + `OptionList`; each keystroke re-ranks entries with `quickopen.fuzzy_filter` (case-insensitive subsequence match — `rdme` → `README.md`, matched chars highlighted), `↓`/`Ctrl+N`/`↑`/`Ctrl+P` move the highlight (delegated to the `OptionList`, TocScreen-style), Enter `dismiss`es the chosen payload. On an empty query the highlight defaults to the **currently-viewed file** (`QuickOpenScreen(current=…)` → `_default_highlight`), so the palette opens on "where you are"; this is also why a directory launch auto-opens the palette preselected to README. `_on_quick_open_picked` dispatches by type: a `Path` opens through the same `_navigate_to` (history + diff-aware) as the sidebar; a `DiffSource` runs `_open_diff_source` (a worker that `asyncio.to_thread`s `diffsource.capture_diff` — a missing binary / non-repo / empty diff surfaces as a notice, mirroring the CLI's `--diff`/`--pr` errors) → `_show_captured_diff`, which renders the captured text as a **transient view** (`_transient_view=True`): the raw diff is stashed in the tempdir for a real `_md_path` (cf. stdin), the previous doc is pushed onto `_history` (so `Backspace` returns), and `_transient_view` suppresses file watching (`_start_watching`) and `:w` (there's nothing to save back to — `_load_file` clears the flag on navigation to a real file). Esc/empty/current-file is a no-op. `quickopen.py` is pure (enumeration + ranking + diff-source/repo helpers, reusing `filetree.is_viewable`, pruning `.git`/`node_modules`/hidden dirs); `quick_open.py` is its thin Textual wrapper (the isolation pattern).
 
 **Project-wide grep finder (`Ctrl+G` / `:grep`).** The cross-file counterpart to the in-document `/` search. `Ctrl+G` (bound on the App) and `:grep`/`:g` both call `action_quick_open`'s sibling `action_project_grep`, which enumerates the viewable files under `_root_dir` (else `_md_dir`) **once** with `quickopen.list_viewable_files` and pushes `project_grep.py:ProjectGrepScreen(root, files)`. The modal is an `Input` + `OptionList` + a `#project-grep-status` line; each keystroke re-runs `projectgrep.grep_files(root, query, files=…)` — which scans each file's lines with a pattern from `search.compile_query` (the *same* case-insensitive regex + literal-fallback as `/`), returning `(hits, truncated)` where each `GrepHit(path, rel, line_no, line, spans)` carries the matched `(start,end)` offsets. Rows render as a muted `rel:line_no:` prefix + the line with its matched substrings highlighted (bold orange, as the quick-open finder); `↓`/`Ctrl+N`/`↑`/`Ctrl+P` move the highlight (delegated to the `OptionList`), Enter `dismiss`es a `GrepResult(hit, query)`. `_on_grep_picked` runs `_open_grep_hit` (a worker): it `_navigate_to`s the hit's file (unless already current), then activates the query as an in-document search (sets `_search_query`, lights up the `/` command-line status bar, calls `_run_search`) so every match is highlighted and `n`/`N` step through them — the view lands on the first match (line-precise jump to the exact grep line is intentionally out of scope; mapping a source line to a rendered block is left for later). `grep_files` caps total hits (`_MAX_HITS`) and gives each `finditer` the remaining wall-clock budget (`_BUDGET_S`) as a `timeout=`, so a catastrophic-backtracking pattern can't hang — both cases set `truncated`, surfaced in the status line. `projectgrep.py` is pure (enumeration via `quickopen` + matching via `search`); `project_grep.py` is its thin Textual wrapper (the isolation pattern).
+
+**YAML frontmatter.** `frontmatter.py` (pure) re-renders a file's leading `---`…`---` block readably. Textual's parser has no frontmatter plugin, so a raw block collapses into a mangled one-line setext heading; `_source_for` runs `frontmatter.render_document(text)` **before** the wikilink rewrite, turning the block into a **blockquote list** (one `**key**: value` per line, nested YAML list items indented and keeping their dash) that flows through the normal pipeline — so a `[[wikilink]]` or URL in a value stays clickable (the subsequent `rewrite_wikilinks` sees it). `split_frontmatter`/`strip_frontmatter` (the latter reused by the wikilink hover preview, which wants content not metadata) share the same line-based split (no real YAML parse — readable rendering is all the viewer needs). Only a properly-closed block at the very start is touched (an unterminated `---` or a mid-document `---` rule is left alone).
+
+**Obsidian-style wikilinks (`[[note]]` / `[[note|display]]`).** `wikilink.py` (pure) is the parser/resolver; `wiki_peek.py` is its thin Textual wrapper. **The seam is `_source_for`**: for non-diff Markdown it runs `rewrite_wikilinks(text)` (after `frontmatter.render_document`, above) before the viewer parses, turning `[[X]]`/`[[X|Y]]` into a standard `[Y](wikilink:X)` link (target percent-encoded). The `wikilink:` sentinel scheme is what makes this reuse everything: markdown-it keeps the custom scheme, Textual makes it a clickable `@click` link, and `on_markdown_link_clicked` branches on the scheme (`parse_wikilink_href`) → `_open_wikilink` (a worker). The rewrite **skips fenced code blocks and inline code spans** so a literal `[[x]]` in a code sample survives (`_iter_non_code_lines` + backtick-span scanning). **Resolution is Obsidian-style and lazy** (at click/peek time, not per render — so no filename index is built on every re-render): `_resolve_wikilink` → `resolve_target(target, root, files)` matches by basename anywhere under the vault root (`_root_dir` else `_md_dir`, enumerated with `quickopen.list_viewable_files` off the UI thread), or by relative path for a `dir/note` target, case-insensitively, `.md` optional, ties broken shallowest-then-lexicographic. A resolved link navigates via the usual `_navigate_to`; an unresolved one just notifies (**broken-link colouring is deferred** — it would need render-time resolution). **Mouse hover preview** (`on_mouse_move` → `_update_wiki_hover`): `MouseMove` bubbles to the App carrying the style under the cursor, whose `@click` meta is the hovered link's action (`wikilink.link_href_from_meta` extracts the href — still URL-encoded here, unlike `LinkClicked`, so it's `unquote`d before `parse_wikilink_href`). A wikilink → the `#wiki-hover` floating popup (`_WikiHoverPopup`, a `Static` on the top `_tooltips` layer, positioned at `self.mouse_position` via `absolute_offset`, `constrain: inside inflect` to stay on-screen — mimicking Textual's built-in `Tooltip` but driven *per-link* rather than per-widget) shows a clamped Rich-Markdown preview (`_wiki_preview_text`, first `_WIKI_PREVIEW_CHARS`); moving off the link hides it. Both the vault file list and each note's text are cached per document (`_wiki_files_cache`/`_wiki_preview_cache`, reset in `_load_file`) so a hover never re-walks the vault or re-reads a file. Mouse support varies over tmux/SSH, so **keyboard peek (`p`, `action_wiki_peek`)** is the always-reliable counterpart: it reads the links from the *rendered* source with `wikilinks_from_source(document.source)` (the raw `[[..]]` is gone post-rewrite, so it matches the `](wikilink:..)` form — exactly what's clickable), and pushes `wiki_peek.WikiLinkPickerScreen` (an `Input`+`OptionList` fuzzy picker, `quickopen.fuzzy_filter`, like the commit browser). Choosing a link runs `_peek_wikilink`: resolve → read the note off-thread → `push_screen_wait(WikiPeekScreen)` — a `ScrollableModalScreen` rendering the note as a bare `Markdown` widget (inherits theme.css colours, cf. `SelectionViewScreen`); inside it `o`/`Enter` jumps (dismiss `True` → `_navigate_to`), `Esc`/`q` just closes.
 
 **Navigation/search:** `/` opens the unified command line (`_CommandLine`, `#cmdline`) in search mode — a fixed `/` prompt label with the pattern in the field; the query is a case-insensitive regex (invalid → literal, see `search.py`). On submit, `_run_search` scans every atomic block's `_search_text` and records one **hit per matched substring** (`_search_hits` = `(block, start, end)`); `n`/`N` step through hits **one occurrence at a time** (`_search_index`), so a block with several matches is walked occurrence-by-occurrence rather than skipped in one jump (empty query clears the search, after which `n`/`N` are no-ops; headings stay on `]`/`[` and hunks on `}`/`{`). Each hit stores the match's line index within its block, so `_focus_current` scrolls to the matched *line* (`block.virtual_region.y + line`), not just the block top — stepping through hits inside one tall fence/hunk still moves the view. The bar stays up as a status line (query + `i/N` position). Highlighting is **per-word**: `_paint_widget` washes just the matched substrings (`Content.highlight_regex` for Markdown blocks/fences; Rich `Text.highlight_regex` on a re-rendered `render_hunk` for `DiffHunk`), subtle green for the set and brighter+bold (`stylize` over the current span) for the current hit. **`_search_text` must be the exact text the colours land on** — for `DiffHunk` that's the *rendered* text (gutter included), not `_plain`, so finditer offsets map to what's drawn. `_restore_block`/`_search_originals` undo it; `_search_matches` is the de-duped hit blocks (for restore); `.search-current` is a no-style marker class on the current block (for tests). `_load_file` calls `_end_search` so an active search doesn't carry stale widget refs into a newly-navigated document. (Known limitation: table cell text isn't searchable — see `_search_text`.) The diff file-heading `@ ` prefix is the hook that makes this work for diffs: a heading's text starts with `@ ` and a hunk header with `@@ `, so `^@ ` filters to files and `@@` to hunks. (The viewer is `can_focus=False`, so on submit the app blurs the input with `set_focus(None)` rather than focusing the viewer, letting `n`/`N` reach the App bindings.)
 
@@ -62,6 +66,8 @@ Anything touching a subprocess or rasterization is split into a **pure module** 
 - `svg.py` (pure rasterize/`extract_svgs`) ↔ `svg_widgets.py` (the thin Textual wrapper: `svg_to_zoomable_image` / `render_svgs_into` turn SVG markup into mounted `ZoomableImage`s; shared by `ask_ai.py` and `section_insight.py`).
 - `quickopen.py` (file enumeration + fuzzy ranking) ↔ `quick_open.py` (`QuickOpenScreen` — the `Ctrl+O`/`:e` fuzzy finder modal, above).
 - `projectgrep.py` (cross-file line search) ↔ `project_grep.py` (`ProjectGrepScreen` — the `Ctrl+G`/`:grep` finder modal, below).
+- `wikilink.py` (`[[wikilink]]` rewrite/extract/resolve — `rewrite_wikilinks`, `wikilinks_from_source`, `parse_wikilink_href`, `link_href_from_meta`, `resolve_target`; the `wikilink:` sentinel scheme) ↔ `wiki_peek.py` (`WikiLinkPickerScreen` fuzzy picker + `WikiPeekScreen` scrollable note preview — the `p` peek) ↔ `_WikiHoverPopup` in `app.py` (the `#wiki-hover` mouse-hover preview). See the wikilinks section above.
+- `frontmatter.py` (pure: `split_frontmatter`/`strip_frontmatter`/`to_markdown`/`render_document` — readable YAML-frontmatter rendering) — called from `_source_for`; no Textual wrapper (it just reshapes source text). See the frontmatter section above.
 - `gitlog.py` (`git log`/`git show` argv builders + `parse_log` + `split_show`/`commit_markdown_header` + thin subprocess wrappers, reusing `diffsource.DiffSourceError`) ↔ `commit_log.py` (`CommitLogScreen` — the `--log`/`:log` commit browser modal; an `Input` fuzzy-filters the `Commit`s with `quickopen.fuzzy_filter`, Enter dismisses the chosen `Commit`, and `app._open_commit_diff` splits the `git show` into a Markdown header + diff and hands them to `_show_captured_diff(…, prelude=header)` so the delta diff renders under the commit metadata in the transient view).
 - `mermaid.py`, `diff.py`, `diffview.py`, `eventflow.py`, `eventflowview.py`, `selection.py`, `search.py`, `command.py`, `textdiff.py`, `edit_apply.py`, `filetree.py`, `quickopen.py` are all pure / framework-free (`filetree.is_viewable`/`initial_file` back the file-tree sidebar; `_MdTree` is their thin `DirectoryTree` wrapper in `app.py`) (`command.py:parse_command` maps `:` input → a canonical command name; `selection.py:section_source`/`section_line_range` return a heading's section as clean Markdown / its source-line range sliced from `document.source`; `textdiff.build_unified_diff` and `edit_apply.replace_line_range`/`selection_block_range` are the AI-edit splice/diff helpers, below).
 - `eventflowview.py` (EventStorming flow → Rich `Text` swimlanes) ↔ `eventflow_widget.py` (`EventFlow`, a `ScrollableContainer` over a `_FlowBody` `Static`; `get_selection` returns the original DSL so a selected/copied/AI'd flow reads as source, and the inner `_FlowBody.get_selection` returns `None` so the box-art never leaks).
@@ -93,3 +99,142 @@ All rendered PNGs/SVGs go to a per-run `TemporaryDirectory` (`MdViewerApp._tempd
 ## Testing
 
 Textual app tests drive the UI with `app.run_test()` and an async pilot, wrapped in `asyncio.run` (see `tests/test_app.py`). Pure modules are tested directly. Fixtures live in `tests/fixtures/`.
+
+<!-- rtk-instructions v2 -->
+# RTK (Rust Token Killer) - Token-Optimized Commands
+
+## Golden Rule
+
+**Always prefix commands with `rtk`**. If RTK has a dedicated filter, it uses it. If not, it passes through unchanged. This means RTK is always safe to use.
+
+**Important**: Even in command chains with `&&`, use `rtk`:
+```bash
+# ❌ Wrong
+git add . && git commit -m "msg" && git push
+
+# ✅ Correct
+rtk git add . && rtk git commit -m "msg" && rtk git push
+```
+
+## RTK Commands by Workflow
+
+### Build & Compile (80-90% savings)
+```bash
+rtk cargo build         # Cargo build output
+rtk cargo check         # Cargo check output
+rtk cargo clippy        # Clippy warnings grouped by file (80%)
+rtk tsc                 # TypeScript errors grouped by file/code (83%)
+rtk lint                # ESLint/Biome violations grouped (84%)
+rtk prettier --check    # Files needing format only (70%)
+rtk next build          # Next.js build with route metrics (87%)
+```
+
+### Test (60-99% savings)
+```bash
+rtk cargo test          # Cargo test failures only (90%)
+rtk go test             # Go test failures only (90%)
+rtk jest                # Jest failures only (99.5%)
+rtk vitest              # Vitest failures only (99.5%)
+rtk playwright test     # Playwright failures only (94%)
+rtk pytest              # Python test failures only (90%)
+rtk rake test           # Ruby test failures only (90%)
+rtk rspec               # RSpec test failures only (60%)
+rtk test <cmd>          # Generic test wrapper - failures only
+```
+
+### Git (59-80% savings)
+```bash
+rtk git status          # Compact status
+rtk git log             # Compact log (works with all git flags)
+rtk git diff            # Compact diff (80%)
+rtk git show            # Compact show (80%)
+rtk git add             # Ultra-compact confirmations (59%)
+rtk git commit          # Ultra-compact confirmations (59%)
+rtk git push            # Ultra-compact confirmations
+rtk git pull            # Ultra-compact confirmations
+rtk git branch          # Compact branch list
+rtk git fetch           # Compact fetch
+rtk git stash           # Compact stash
+rtk git worktree        # Compact worktree
+```
+
+Note: Git passthrough works for ALL subcommands, even those not explicitly listed.
+
+### GitHub (26-87% savings)
+```bash
+rtk gh pr view <num>    # Compact PR view (87%)
+rtk gh pr checks        # Compact PR checks (79%)
+rtk gh run list         # Compact workflow runs (82%)
+rtk gh issue list       # Compact issue list (80%)
+rtk gh api              # Compact API responses (26%)
+```
+
+### JavaScript/TypeScript Tooling (70-90% savings)
+```bash
+rtk pnpm list           # Compact dependency tree (70%)
+rtk pnpm outdated       # Compact outdated packages (80%)
+rtk pnpm install        # Compact install output (90%)
+rtk npm run <script>    # Compact npm script output
+rtk npx <cmd>           # Compact npx command output
+rtk prisma              # Prisma without ASCII art (88%)
+```
+
+### Files & Search (60-75% savings)
+```bash
+rtk ls <path>           # Tree format, compact (65%)
+rtk read <file>         # Code reading with filtering (60%)
+rtk grep <pattern>      # Search grouped by file (75%). Format flags (-c, -l, -L, -o, -Z) run raw.
+rtk find <pattern>      # Find grouped by directory (70%)
+```
+
+### Analysis & Debug (70-90% savings)
+```bash
+rtk err <cmd>           # Filter errors only from any command
+rtk log <file>          # Deduplicated logs with counts
+rtk json <file>         # JSON structure without values
+rtk deps                # Dependency overview
+rtk env                 # Environment variables compact
+rtk summary <cmd>       # Smart summary of command output
+rtk diff                # Ultra-compact diffs
+```
+
+### Infrastructure (85% savings)
+```bash
+rtk docker ps           # Compact container list
+rtk docker images       # Compact image list
+rtk docker logs <c>     # Deduplicated logs
+rtk kubectl get         # Compact resource list
+rtk kubectl logs        # Deduplicated pod logs
+```
+
+### Network (65-70% savings)
+```bash
+rtk curl <url>          # Compact HTTP responses (70%)
+rtk wget <url>          # Compact download output (65%)
+```
+
+### Meta Commands
+```bash
+rtk gain                # View token savings statistics
+rtk gain --history      # View command history with savings
+rtk discover            # Analyze Claude Code sessions for missed RTK usage
+rtk proxy <cmd>         # Run command without filtering (for debugging)
+rtk init                # Add RTK instructions to CLAUDE.md
+rtk init --global       # Add RTK to ~/.claude/CLAUDE.md
+```
+
+## Token Savings Overview
+
+| Category | Commands | Typical Savings |
+|----------|----------|-----------------|
+| Tests | vitest, playwright, cargo test | 90-99% |
+| Build | next, tsc, lint, prettier | 70-87% |
+| Git | status, log, diff, add, commit | 59-80% |
+| GitHub | gh pr, gh run, gh issue | 26-87% |
+| Package Managers | pnpm, npm, npx | 70-90% |
+| Files | ls, read, grep, find | 60-75% |
+| Infrastructure | docker, kubectl | 85% |
+| Network | curl, wget | 65-70% |
+
+Overall average: **60-90% token reduction** on common development operations.
+<!-- /rtk-instructions -->

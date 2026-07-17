@@ -16,6 +16,7 @@ from watchfiles import awatch
 
 from markdown_it.token import Token
 from rich.cells import cell_len
+from rich.markdown import Markdown as RichMarkdown
 from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -66,6 +67,16 @@ from mdview.selection import (
 )
 from mdview.svg import SvgRenderError, extract_svgs, rasterize_svg
 from mdview.toc import TocScreen
+from mdview.wiki_peek import WikiLinkPickerScreen, WikiPeekScreen
+from mdview import frontmatter
+from mdview.frontmatter import strip_frontmatter
+from mdview.wikilink import (
+    link_href_from_meta,
+    parse_wikilink_href,
+    resolve_target,
+    rewrite_wikilinks,
+    wikilinks_from_source,
+)
 
 
 # Section insight (`##` lightbulb → treasure): the inline marker's three states
@@ -110,6 +121,10 @@ def _insight_get_selection(self: MarkdownHeader, selection: Selection):
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 _MARKDOWN_EXTS = {".md", ".markdown", ".mdown", ".mkd"}
 
+# Wikilink hover preview: how much of the note to show (clamped; the popup is a
+# peek, not a scrollable reader — for that, use the `p` picker).
+_WIKI_PREVIEW_CHARS = 1500
+
 # `/` search: colour applied to the matched substrings themselves (per-word, not
 # the whole block). The set gets a muted green wash; the current match (where
 # n/N landed) a brighter, bold one. These strings parse for both Textual
@@ -136,6 +151,21 @@ class _MdViewer(MarkdownViewer):
         # prevent_default() suppresses MarkdownViewer's base handler in the
         # same MRO dispatch, so the message still bubbles up to the App.
         message.prevent_default()
+
+
+class _WikiHoverPopup(Static):
+    """Floating preview shown while the mouse hovers a `[[wikilink]]`.
+
+    Mimics Textual's built-in `Tooltip`: it lives on the top `_tooltips` layer,
+    positions at the cursor via `absolute_offset`, and `constrain: inside inflect`
+    keeps it on-screen (flipping when near an edge). Unlike a tooltip it's driven
+    per-link from the App's `on_mouse_move` (a tooltip is per-widget, so it can't
+    tell a link apart from the prose around it). Content is clamped and overflow
+    is hidden — it's a peek, not a scrollable reader (that's the `p` picker).
+
+    Styled via ``#wiki-hover`` in theme.css (its look needs the theme's ``$orange``
+    palette, which a widget's ``DEFAULT_CSS`` can't see).
+    """
 
 
 class _MdTree(DirectoryTree):
@@ -229,6 +259,8 @@ class MdViewerApp(App):
         Binding("ctrl+g", "project_grep", "Grep", show=True),
         # git log commit browser (also `--log`/`:log`)
         Binding("l", "git_log", "Git log", show=True),
+        # wikilink peek: preview a [[note]] without leaving the current doc
+        Binding("p", "wiki_peek", "Peek wikilink", show=True),
         # help
         Binding("question_mark", "help", "Help", show=True),
     ]
@@ -323,6 +355,13 @@ class MdViewerApp(App):
         # git/gh diff opened from the palette). Set true while one is shown,
         # cleared on navigation to a real file in `_load_file`.
         self._transient_view: bool = False
+        # Wikilink hover-preview state. `_wiki_hover_href` is the link currently
+        # shown (so a move within the same link is a no-op); the caches are
+        # per-document (reset on navigation in `_load_file`) so a hover never
+        # re-walks the vault or re-reads a note.
+        self._wiki_hover_href: str | None = None
+        self._wiki_files_cache: list[Path] | None = None
+        self._wiki_preview_cache: dict[str, str | None] = {}
         if content is not None:
             # stdin has no source directory, so relative images/links resolve
             # against base_dir (defaults to CWD). Stash the text in the tempdir
@@ -370,6 +409,9 @@ class MdViewerApp(App):
             yield Static("", id="cmdline-prompt")
             yield _CommandLine(placeholder="検索 / コマンド", id="cmdline")
             yield Static("", id="cmdline-count")
+        # Floating hover preview for `[[wikilinks]]` (on the top _tooltips layer,
+        # hidden until the mouse rests on a wikilink; see on_mouse_move).
+        yield _WikiHoverPopup(id="wiki-hover")
 
     async def on_mount(self) -> None:
         self.title = self._display_name
@@ -877,6 +919,9 @@ class MdViewerApp(App):
         if href.startswith(("http://", "https://", "mailto:", "data:")):
             self.open_url(href)
             return
+        if parse_wikilink_href(href) is not None:
+            self.run_worker(self._open_wikilink(href), exclusive=True)
+            return
         target = self._resolve_md_link(href)
         if target is not None:
             path, anchor = target
@@ -915,6 +960,144 @@ class MdViewerApp(App):
         if not candidate.is_file():
             return None
         return candidate, anchor
+
+    async def _resolve_wikilink(self, target: str) -> Path | None:
+        """Resolve a wikilink note name to a file, Obsidian-style.
+
+        By basename anywhere under the vault root (`_root_dir`, else the viewed
+        file's dir). Done lazily off the UI thread at click/peek time, so no
+        filename index is built per render.
+        """
+        root = self._root_dir or self._md_dir
+        files = await asyncio.to_thread(list_viewable_files, root)
+        return resolve_target(target, root, files)
+
+    async def _open_wikilink(self, href: str) -> None:
+        """Resolve a `wikilink:` href by note name and navigate to it.
+
+        A target that resolves to no file surfaces as a notice (the broken-link
+        colouring is deferred; clicking a missing note just tells the user).
+        """
+        target = parse_wikilink_href(href)
+        if not target:
+            return
+        resolved = await self._resolve_wikilink(target)
+        if resolved is None:
+            self.notify(f"'{target}' が見つかりません", severity="warning")
+            return
+        await self._navigate_to(resolved, "")
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        """Show/hide the wikilink hover preview as the cursor moves.
+
+        `MouseMove` bubbles to the App carrying the style under the cursor; its
+        `@click` meta is the hovered link's action. A `wikilink:` link → show the
+        preview at the cursor; anything else → hide it. (Mouse support varies over
+        tmux/SSH — the `p` picker is the always-reliable path.)
+        """
+        style = getattr(event, "style", None)
+        meta = style.meta if style is not None else {}
+        href = link_href_from_meta(meta)
+        target = parse_wikilink_href(unquote(href)) if href is not None else None
+        # Cheap common case: moving over plain text with no popup up — skip the
+        # DOM query churn that _update_wiki_hover would otherwise do every move.
+        if target is None and self._wiki_hover_href is None:
+            return
+        self._update_wiki_hover(target, href)
+
+    def _update_wiki_hover(self, target: str | None, href: str | None = None) -> None:
+        """Reflect the hovered wikilink *target* in the floating preview popup."""
+        try:
+            popup = self.query_one("#wiki-hover", _WikiHoverPopup)
+        except NoMatches:
+            return
+        if target is None:
+            self._hide_wiki_hover()
+            return
+        key = href or target
+        if key == self._wiki_hover_href and popup.display:
+            return  # already showing this exact link
+        text = self._wiki_preview_text(target)
+        if text is None:
+            self._hide_wiki_hover()  # missing note: nothing to preview
+            return
+        popup.update(RichMarkdown(text))
+        popup.absolute_offset = self.mouse_position
+        popup.display = True
+        self._wiki_hover_href = key
+
+    def _hide_wiki_hover(self) -> None:
+        self._wiki_hover_href = None
+        try:
+            self.query_one("#wiki-hover", _WikiHoverPopup).display = False
+        except NoMatches:
+            pass
+
+    def _wiki_preview_text(self, target: str) -> str | None:
+        """A clamped preview of the note *target* resolves to, or None if missing.
+
+        Cached per document (both the vault file list and each note's text), so a
+        hover never re-walks the vault or re-reads a file.
+        """
+        if target in self._wiki_preview_cache:
+            return self._wiki_preview_cache[target]
+        root = self._root_dir or self._md_dir
+        if self._wiki_files_cache is None:
+            self._wiki_files_cache = list_viewable_files(root)
+        resolved = resolve_target(target, root, self._wiki_files_cache)
+        preview: str | None
+        if resolved is None:
+            preview = None
+        else:
+            try:
+                raw = resolved.read_text(encoding="utf-8")
+            except OSError:
+                preview = None
+            else:
+                # Drop YAML frontmatter — the hover preview is for content, not
+                # metadata.
+                body = strip_frontmatter(raw)
+                preview = body[:_WIKI_PREVIEW_CHARS]
+                if len(body) > _WIKI_PREVIEW_CHARS:
+                    preview += "\n\n…"
+        self._wiki_preview_cache[target] = preview
+        return preview
+
+    def action_wiki_peek(self) -> None:
+        """`p`: pick a wikilink in the current doc and preview it in a modal.
+
+        The keyboard-reliable counterpart to Obsidian's hover preview (mouse
+        hover is deferred). Reads the links from the rendered source, so the
+        picker offers exactly what's clickable.
+        """
+        self._hide_wiki_hover()  # don't leave a hover popup over the picker
+        source = self.query_one(MarkdownViewer).document.source
+        links = wikilinks_from_source(source)
+        if not links:
+            self.notify("このドキュメントにウィキリンクはありません")
+            return
+        self.push_screen(WikiLinkPickerScreen(links), self._on_wiki_link_picked)
+
+    def _on_wiki_link_picked(self, picked: tuple[str, str] | None) -> None:
+        if not picked:
+            return
+        target, _display = picked
+        self.run_worker(self._peek_wikilink(target), exclusive=True)
+
+    async def _peek_wikilink(self, target: str) -> None:
+        """Preview *target* in a scrollable modal; jump to it if the user asks."""
+        resolved = await self._resolve_wikilink(target)
+        if resolved is None:
+            self.notify(f"'{target}' が見つかりません", severity="warning")
+            return
+        try:
+            text = await asyncio.to_thread(resolved.read_text, encoding="utf-8")
+        except OSError as e:
+            self.notify(f"failed to load {resolved}: {e}", severity="error")
+            return
+        jump = await self.push_screen_wait(WikiPeekScreen(resolved.name, text))
+        if jump:
+            await self._navigate_to(resolved, "")
 
     async def _navigate_to(self, path: Path, anchor: str) -> None:
         viewer = self.query_one(MarkdownViewer)
@@ -975,7 +1158,13 @@ class MdViewerApp(App):
             self._diff_files = parse_diff(text)
             return diff_to_markdown(self._diff_files)
         self._diff_files = None
-        return text
+        # Re-render a leading YAML frontmatter block readably (one key per line,
+        # links clickable) — else Textual's parser collapses it into a mangled
+        # setext heading. Then rewrite Obsidian-style `[[note]]` links to
+        # standard `[..](wikilink:..)` links (skipping code) so the existing
+        # click machinery — and any wikilink inside the frontmatter — works.
+        text = frontmatter.render_document(text)
+        return rewrite_wikilinks(text)
 
     async def _load_file(self, path: Path, anchor: str = "") -> bool:
         viewer = self.query_one(MarkdownViewer)
@@ -988,6 +1177,11 @@ class MdViewerApp(App):
         self._md_dir = path.parent
         self.title = path.name
         self._transient_view = False  # a real file again (clears a diff view)
+        # New document: drop the hover popup and its per-document caches so a
+        # stale preview or vault file-list doesn't carry over.
+        self._hide_wiki_hover()
+        self._wiki_files_cache = None
+        self._wiki_preview_cache = {}
         await self._render_source(self._source_for(text))
         # Navigating to a new document starts a fresh edit session.
         self._disk_baseline = text
