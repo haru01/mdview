@@ -45,6 +45,31 @@ def test_action_target_none_for_other_actions():
     assert wikilink_action_target("") is None
 
 
+# --- themed preview render (pure) ------------------------------------------
+
+
+def test_hover_preview_uses_accent_not_rich_defaults():
+    """The hover preview renders through the Obsidian palette, so inline code /
+    links come out accent-purple — not Rich Markdown's default cyan/blue."""
+    from mdview.app import _render_preview_markdown
+    from mdview.palette import ACCENT  # #7f6df2
+
+    accent_rgb = tuple(int(ACCENT[i : i + 2], 16) for i in (1, 3, 5))  # (127,109,242)
+    text = _render_preview_markdown("本文 `code` と [link](http://example.com)。")
+
+    triplets = set()
+    for span in text.spans:
+        color = getattr(span.style, "color", None)
+        if color is not None:
+            tr = color.get_truecolor()
+            triplets.add((tr.red, tr.green, tr.blue))
+
+    # inline code + link both remap to the accent purple.
+    assert accent_rgb in triplets, f"accent {accent_rgb} missing from {triplets}"
+    # Rich's default inline-code cyan (0,128,128) must not survive the remap.
+    assert (0, 128, 128) not in triplets
+
+
 # --- hover behaviour -------------------------------------------------------
 
 

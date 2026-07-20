@@ -18,6 +18,7 @@ from textual.widgets import Input, OptionList
 from textual.widgets.option_list import Option
 
 from mdview.gitlog import Commit
+from mdview.palette import ACCENT_BRIGHT, TEXT_MUTED
 from mdview.quickopen import fuzzy_filter
 
 _MAX_RESULTS = 200
@@ -94,7 +95,7 @@ def _match_text(commit: Commit) -> str:
 def _render_commit(commit: Commit) -> Option:
     """A row: ``shorthash  subject  (author, date)`` with the hash in accent and
     the author/date muted, matching the finder look elsewhere."""
-    rendered = Text(commit.short, style="bold #e8a87c")
+    rendered = Text(commit.short, style=f"bold {ACCENT_BRIGHT}")
     rendered.append(f"  {commit.subject}  ")
-    rendered.append(f"({commit.author}, {commit.date})", style="#888888")
+    rendered.append(f"({commit.author}, {commit.date})", style=TEXT_MUTED)
     return Option(rendered)

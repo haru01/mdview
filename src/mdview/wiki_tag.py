@@ -18,6 +18,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList
 from textual.widgets.option_list import Option
 
+from mdview.palette import ACCENT_BRIGHT
 from mdview.quickopen import fuzzy_filter
 
 _MAX_RESULTS = 200
@@ -101,5 +102,5 @@ def _render_label(text: str, indices: list[int]) -> Text:
     """The candidate path with its fuzzy-matched characters highlighted."""
     rendered = Text(text)
     for i in indices:
-        rendered.stylize("bold #e8a87c", i, i + 1)
+        rendered.stylize(f"bold {ACCENT_BRIGHT}", i, i + 1)
     return rendered

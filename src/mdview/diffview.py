@@ -21,13 +21,15 @@ from rich.syntax import Syntax
 from rich.text import Text
 
 from mdview.diff import FileDiff, Hunk, looks_like_diff, parse_diff, parse_hunk_lines
+from mdview.palette import DIFF_ADD_BG, DIFF_DEL_BG, DIFF_FILE_RULE
 
 # Background bars for changed lines (dark, low-saturation so syntax fg stays
 # readable). Exposed as constants so tests and themes can reference them.
-ADD_BG = "#16331f"
-DEL_BG = "#3a1d1d"
+ADD_BG = DIFF_ADD_BG
+DEL_BG = DIFF_DEL_BG
 GUTTER_STYLE = "dim"
-HEADER_STYLE = "dim cyan"
+# The `@@` hunk-header line and the non-TTY file banner follow the accent hue.
+HEADER_STYLE = f"dim {DIFF_FILE_RULE}"
 _SYNTAX_THEME = "ansi_dark"
 
 
@@ -108,7 +110,7 @@ def _zip_lines(lines: list[Text], hunk: Hunk):
 def render_file(file: FileDiff) -> RenderableType:
     """A file's delta-styled diff for the non-TTY path: banner + hunks."""
     title = f"{file.path}{' (' + file.status + ')' if file.status else ''}"
-    parts: list[RenderableType] = [Rule(title, style="cyan")]
+    parts: list[RenderableType] = [Rule(title, style=DIFF_FILE_RULE)]
     if file.binary_note:
         parts.append(Text(file.binary_note, style="dim"))
     for hunk in file.hunks:

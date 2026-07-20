@@ -1,10 +1,13 @@
 /* ===== Palette =====
- * The whole theme is built from three colors, mirroring Claude Code's look:
- * coral (the brand/mascot accent), green (the secondary accent), and the
- * neutral foreground/greys that carry body text. No blues, no amber.
+ * Obsidian-flavoured: a near-monochrome greyscale (background/body from the
+ * registered `obsidian` theme — see app._OBSIDIAN_THEME) lifted by a single
+ * purple accent. There is no second accent: bold/italic carry the body colour,
+ * and only links, tags, and inline code wear the purple. The neutral vars
+ * ($surface/$panel/$boost/$text/$text-muted) come from that theme; the two
+ * below are the theme's own additions. Keep them in sync with palette.py.
  */
-$orange: #d97757;  /* Claude's coral — primary accent */
-$green: #4ebf71;   /* secondary accent (replaces the old blue) */
+$accent: #7f6df2;  /* Obsidian's purple — links, tags, structural accents */
+$rule:   #363636;  /* a faint grey divider — HR, table grid, heading rules */
 
 Screen {
     background: $surface;
@@ -20,7 +23,7 @@ MarkdownViewer {
 
 #sidebar {
     width: 32;
-    border-right: solid $orange 30%;
+    border-right: solid $accent 30%;
     background: $surface;
 }
 
@@ -30,29 +33,28 @@ Markdown {
 }
 
 /* ===== Headings =====
- * Every level wears the same $orange (Claude's mascot color), so the heading
- * hue is unified across H1–H6. Hierarchy is carried by structure, not color:
- * H1–H3 keep their borders/background as section landings, and the deepest
- * levels (H5–H6) dim the shared orange so nesting still reads as de-emphasized
- * without switching hue.
+ * Obsidian-faithful: headings carry the *body* colour + bold, not an accent
+ * hue. A terminal can't scale font size, so hierarchy is drawn with rules and
+ * muting instead: H1 gets a thin accent rule as the one purple touch, H2 a
+ * faint grey rule, H3/H4 stand on bold alone, and the deepest levels (H5/H6)
+ * fade to the muted grey so nesting reads as de-emphasised.
  */
 
 MarkdownH1 {
-    color: $orange;
-    background: $boost;
+    color: $text;
     text-style: bold;
-    padding: 1 2;
+    padding: 0 0 1 0;
     margin: 1 0 1 0;
-    border-bottom: heavy $orange;
+    border-bottom: solid $accent 60%;
     content-align: left middle;
 }
 
 MarkdownH2 {
-    color: $orange;
+    color: $text;
     text-style: bold;
     padding: 0 0 0 0;
     margin: 1 0 1 0;
-    border-bottom: heavy $orange 60%;
+    border-bottom: solid $rule;
 }
 
 /* In a whole-diff document, a file heading and its hunks are one unit: drop the
@@ -63,26 +65,26 @@ MarkdownH2.diff-file {
 }
 
 MarkdownH3 {
-    color: $orange;
+    color: $text;
     text-style: bold;
     margin: 1 0 1 0;
-    border-bottom: solid $orange 40%;
 }
 
 MarkdownH4 {
-    color: $orange;
+    color: $text;
     text-style: bold;
     margin: 1 0;
 }
 
 MarkdownH5 {
-    color: $orange 75%;
+    color: $text-muted;
     text-style: bold;
     margin: 1 0;
 }
 
 MarkdownH6 {
-    color: $orange 60%;
+    color: $text-muted;
+    text-style: bold;
     margin: 1 0;
 }
 
@@ -94,7 +96,7 @@ MarkdownParagraph {
 
 MarkdownBlockQuote {
     background: $boost;
-    border-left: thick $orange 50%;
+    border-left: thick $accent 50%;
     padding: 0 1;
     margin: 1 0;
     color: $text-muted;
@@ -109,27 +111,28 @@ MarkdownFence {
  * document's metadata (title, dates, clickable tags/sources). */
 #frontmatter-panel {
     background: $boost;
-    border: round $orange 40%;
+    border: round $accent 40%;
     padding: 0 1;
     margin: 0 0 1 0;
     width: 1fr;
     height: auto;
 }
 
-/* Inline emphasis (bold / italic / inline code) is green; orange is reserved
- * for headings and block structure so body text isn't dominated by orange. */
+/* Inline emphasis, Obsidian-style: bold and italic stay the *body* colour and
+ * lean on weight/slant alone (no accent), so a paragraph never reads as a wall
+ * of colour. Only inline code takes the purple, over a faint raised background. */
 MarkdownBlock > .code_inline {
     background: $boost;
-    color: $green;
+    color: $accent;
 }
 
 MarkdownBlock > .em {
-    color: $green;
+    color: $text;
     text-style: italic;
 }
 
 MarkdownBlock > .strong {
-    color: $green;
+    color: $text;
     text-style: bold;
 }
 
@@ -137,20 +140,27 @@ MarkdownList {
     margin: 0 0 1 0;
 }
 
-/* Tighten list items: the per-paragraph bottom margin above would otherwise
- * double-space bullets. Spacing is kept only after the whole list. */
+/* Give each bullet a blank row of breathing room (terminals have no sub-line
+ * leading, so a whole row is the smallest gap we can add). The list's own
+ * bottom margin above supplies the trailing space, so the last item drops its
+ * bottom margin to avoid a double gap after the list. */
 MarkdownList MarkdownParagraph {
+    margin: 0 0 1 0;
+}
+
+MarkdownList > *:last-child MarkdownParagraph {
     margin: 0;
 }
 
 MarkdownHorizontalRule {
-    color: $green;
+    color: $rule;
 }
 
 /* ===== Tables =====
- * Header row stands out with $boost background + accent bold; body rows get
- * subtle zebra striping (alternating $surface / $boost-lighten-1 via 30%
- * tint) so multi-row tables are easy to scan.
+ * Header row stands out with a $boost background + bold body-coloured text;
+ * body rows get subtle zebra striping (alternating $surface / $boost-lighten-1
+ * via 40% tint) so multi-row tables are easy to scan. Grid lines are a faint
+ * grey ($rule), matching the horizontal rule.
  *
  * Textual lacks :nth-of-type for children, so striping is enumerated via
  * .row1/.row3/... classes from MarkdownTableContent. Covers up to ~10 rows
@@ -163,12 +173,12 @@ MarkdownTable {
 }
 
 MarkdownTableContent {
-    keyline: thin $green 30%;
+    keyline: thin $rule;
 }
 
 MarkdownTableContent > .header {
     background: $boost;
-    color: $orange;
+    color: $text;
     text-style: bold;
     padding: 0 1;
 }
@@ -211,7 +221,7 @@ TocScreen {
     width: 80%;
     height: 80%;
     background: $panel;
-    border: round $orange;
+    border: round $accent;
     padding: 1 2;
 }
 
@@ -239,7 +249,7 @@ QuickOpenScreen {
     width: 80%;
     height: 60%;
     background: $panel;
-    border: round $orange;
+    border: round $accent;
     padding: 1 2;
 }
 
@@ -266,7 +276,7 @@ ProjectGrepScreen {
     width: 90%;
     height: 80%;
     background: $panel;
-    border: round $orange;
+    border: round $accent;
     padding: 1 2;
 }
 
@@ -299,7 +309,7 @@ CommitLogScreen {
     width: 90%;
     height: 80%;
     background: $panel;
-    border: round $orange;
+    border: round $accent;
     padding: 1 2;
 }
 
@@ -329,7 +339,7 @@ CommitLogScreen {
     overflow: hidden;
     padding: 0 1;
     background: $panel;
-    border: round $orange;
+    border: round $accent;
     constrain: inside inflect;
 }
 
@@ -348,7 +358,7 @@ HelpScreen {
     width: 80%;
     height: 80%;
     background: $panel;
-    border: round $orange;
+    border: round $accent;
     padding: 1 2;
 }
 
@@ -396,13 +406,13 @@ AskAiScreen {
     width: 90%;
     height: 90%;
     background: $panel;
-    border: round $orange;
+    border: round $accent;
     padding: 1 2;
 }
 
 #ask-ai-context {
     color: $text-muted;
-    border-bottom: solid $green 40%;
+    border-bottom: solid $accent 40%;
     padding: 0 0 1 0;
     margin: 0 0 1 0;
     /* Just a truncated preview (click it for the full selection); cap its height
@@ -429,7 +439,7 @@ SelectionViewScreen {
     width: 80%;
     height: 80%;
     background: $panel;
-    border: round $orange;
+    border: round $accent;
     padding: 1 2;
 }
 
@@ -449,7 +459,7 @@ SectionInsightScreen {
     width: 85%;
     height: 85%;
     background: $panel;
-    border: round $orange;
+    border: round $accent;
     padding: 1 2;
 }
 
@@ -469,7 +479,7 @@ DiffPreviewScreen {
     width: 85%;
     height: 85%;
     background: $panel;
-    border: round $orange;
+    border: round $accent;
     padding: 1 2;
 }
 
@@ -496,13 +506,13 @@ EditInstructionScreen {
     height: auto;
     max-height: 80%;
     background: $panel;
-    border: round $orange;
+    border: round $accent;
     padding: 1 2;
 }
 
 #edit-input-context {
     color: $text-muted;
-    border-bottom: solid $green 40%;
+    border-bottom: solid $accent 40%;
     padding: 0 0 1 0;
     margin: 0 0 1 0;
 }
@@ -538,7 +548,7 @@ EditInstructionScreen {
 /* The question header above each turn's answer, so the thread reads as a
  * conversation. */
 .ask-ai-question {
-    color: $orange;
+    color: $accent;
     text-style: bold;
     margin: 1 0 0 0;
 }
@@ -560,7 +570,7 @@ EditInstructionScreen {
     width: auto;
     height: 1;
     padding: 0 0 0 1;
-    color: $green;
+    color: $accent;
 }
 
 #cmdline {
@@ -579,9 +589,10 @@ EditInstructionScreen {
 }
 
 /* Match highlighting is per-word: app._highlight_block washes just the matched
- * substrings inside each block (subtle green for the set, brighter for the
- * current match), so there is no whole-block CSS rule. `.search-current` stays
- * as a no-style marker class for the block n/N last landed on. */
+ * substrings inside each block (a dim purple for the set, brighter for the
+ * current match — see palette.SEARCH_MATCH_BG/SEARCH_CURRENT_BG), so there is no
+ * whole-block CSS rule. `.search-current` stays as a no-style marker class for
+ * the block n/N last landed on. */
 
 /* ===== Image zoom overlay =====
  * Click a rendered SVG/diagram to blow it up to (almost) the full screen over a

@@ -18,6 +18,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList
 from textual.widgets.option_list import Option
 
+from mdview.palette import ACCENT_BRIGHT
 from mdview.quickopen import QuickOpenEntry, fuzzy_filter
 
 # Cap on options rendered per keystroke: ranking scans every entry, but rebuilding
@@ -108,8 +109,8 @@ class QuickOpenScreen(ModalScreen):
 
 
 def _render_path(text: str, indices: list[int]) -> Text:
-    """The path with its fuzzy-matched characters highlighted (bold orange)."""
+    """The path with its fuzzy-matched characters highlighted (bold accent)."""
     rendered = Text(text)
     for i in indices:
-        rendered.stylize("bold #e8a87c", i, i + 1)
+        rendered.stylize(f"bold {ACCENT_BRIGHT}", i, i + 1)
     return rendered

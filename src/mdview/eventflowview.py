@@ -28,10 +28,11 @@ from rich.cells import cell_len
 from rich.text import Text
 
 from mdview.eventflow import KIND_LABEL, Flow, Lane, Note
+from mdview.palette import ACCENT
 
 # Per-kind accent (border + kind label + text). EventStorming's sticky-note
-# colour convention — intentionally outside theme.css's coral-only palette,
-# because the colours carry meaning here (yellow=actor, blue=command, …).
+# colour convention — intentionally outside theme.css's monochrome+purple
+# palette, because the colours carry meaning here (yellow=actor, blue=command, …).
 KIND_STYLE = {
     "actor": "#e3c84b",  # yellow
     "command": "#6db3f2",  # blue
@@ -50,7 +51,7 @@ FANOUT_BADGE = "×N"  # BULK fork (`*>`): N parallel instances
 _GUTTER_SEP_STYLE = "#5c6b73"
 _ASYNC_STYLE = "#c490e0"
 _JOIN_STYLE = "bold #cfd8dc"
-_TITLE_STYLE = "bold #d97757"
+_TITLE_STYLE = f"bold {ACCENT}"
 
 _MIN_INNER = 4
 _MAX_INNER = 24

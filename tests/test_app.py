@@ -109,8 +109,10 @@ def test_event_flow_selection_yields_dsl() -> None:
     asyncio.run(driver())
 
 
-def test_all_headings_render_in_claude_orange() -> None:
-    """H1–H6 share a single orange hue (#d97757, Claude's mascot color)."""
+def test_headings_render_in_body_and_muted() -> None:
+    """Obsidian-faithful headings: H1–H4 carry the body colour (#dadada), the
+    deepest levels (H5/H6) fade to the muted grey (#999999). Hierarchy is drawn
+    with rules/muting, not an accent hue."""
     import asyncio
 
     from textual.widgets._markdown import (
@@ -123,33 +125,37 @@ def test_all_headings_render_in_claude_orange() -> None:
     )
 
     md = FIXTURES / "sample.md"
-    orange_rgb = (217, 119, 87)  # #d97757
+    text_rgb = (218, 218, 218)  # #dadada  (body)
+    muted_rgb = (153, 153, 153)  # #999999  (muted)
 
     async def driver() -> None:
         app = MdViewerApp(md)
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
             await pilot.pause()
-            for heading_cls in (
-                MarkdownH1,
-                MarkdownH2,
-                MarkdownH3,
-                MarkdownH4,
-                MarkdownH5,
-                MarkdownH6,
-            ):
+            expected = {
+                MarkdownH1: text_rgb,
+                MarkdownH2: text_rgb,
+                MarkdownH3: text_rgb,
+                MarkdownH4: text_rgb,
+                MarkdownH5: muted_rgb,
+                MarkdownH6: muted_rgb,
+            }
+            for heading_cls, want in expected.items():
                 widgets = list(app.query(heading_cls))
                 assert widgets, f"sample should contain a {heading_cls.__name__}"
                 color = widgets[0].styles.color
-                assert (color.r, color.g, color.b) == orange_rgb, (
-                    f"{heading_cls.__name__} should be orange, got {color}"
+                assert (color.r, color.g, color.b) == want, (
+                    f"{heading_cls.__name__} should be {want}, got {color}"
                 )
 
     asyncio.run(driver())
 
 
-def test_accent_palette_is_orange_and_green() -> None:
-    """3-color scheme: orange marks structure (quote bar), green marks inline emphasis."""
+def test_palette_is_monochrome_purple() -> None:
+    """Obsidian-style monochrome + purple: bold/italic keep the body colour, only
+    inline code + the quote bar take the accent, and rules/grid lines are a faint
+    grey. No second accent."""
     import asyncio
 
     from textual.widgets._markdown import (
@@ -160,8 +166,9 @@ def test_accent_palette_is_orange_and_green() -> None:
     )
 
     md = FIXTURES / "sample.md"
-    orange = (217, 119, 87)  # #d97757
-    green = (78, 191, 113)  # #4EBF71
+    accent = (127, 109, 242)  # #7f6df2
+    text = (218, 218, 218)  # #dadada
+    rule = (54, 54, 54)  # #363636
 
     def rgb(color):  # noqa: ANN001, ANN202
         return (color.r, color.g, color.b)
@@ -172,21 +179,21 @@ def test_accent_palette_is_orange_and_green() -> None:
             await pilot.pause()
             await pilot.pause()
 
-            # Inline emphasis (bold / italic / inline code) is green so the body
-            # text doesn't read as a wall of orange.
+            # Bold / italic stay body-coloured (weight/slant carries them);
+            # inline code takes the purple accent.
             para = app.query(MarkdownParagraph).first()
-            assert rgb(para.get_component_styles("strong").color) == green
-            assert rgb(para.get_component_styles("code_inline").color) == green
-            assert rgb(para.get_component_styles("em").color) == green
+            assert rgb(para.get_component_styles("strong").color) == text
+            assert rgb(para.get_component_styles("em").color) == text
+            assert rgb(para.get_component_styles("code_inline").color) == accent
 
             hr = app.query(MarkdownHorizontalRule).first()
-            assert rgb(hr.styles.color) == green
+            assert rgb(hr.styles.color) == rule
 
             keyline = app.query(MarkdownTableContent).first().styles.keyline
-            assert rgb(keyline[1]) == green
+            assert rgb(keyline[1]) == rule
 
             border = app.query(MarkdownBlockQuote).first().styles.border_left
-            assert rgb(border[1]) == orange
+            assert rgb(border[1]) == accent
 
     asyncio.run(driver())
 

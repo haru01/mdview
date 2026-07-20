@@ -21,6 +21,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 
+from mdview.palette import ACCENT_BRIGHT, TEXT_MUTED
 from mdview.projectgrep import GrepHit, grep_files
 
 # Cap on options rendered per keystroke (grep itself caps total hits higher);
@@ -128,13 +129,13 @@ class ProjectGrepScreen(ModalScreen):
 
 def _render_hit(hit: GrepHit) -> Option:
     """A row: a muted ``path:line:`` location prefix, then the matched line with
-    its matched substrings highlighted (bold orange, as the quick-open finder)."""
+    its matched substrings highlighted (bold accent, as the quick-open finder)."""
     prefix = f"{hit.rel}:{hit.line_no}: "
-    rendered = Text(prefix, style="#888888")
+    rendered = Text(prefix, style=TEXT_MUTED)
     body = Text(hit.line.strip("\n"))
     # The line was stripped of its newline already; spans index the raw line, so
     # they line up with `hit.line` here.
     for start, end in hit.spans:
-        body.stylize("bold #e8a87c", start, end)
+        body.stylize(f"bold {ACCENT_BRIGHT}", start, end)
     rendered.append_text(body)
     return Option(rendered)

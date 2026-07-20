@@ -14,11 +14,13 @@ from textual.app import ComposeResult
 from textual.containers import Container, ScrollableContainer, VerticalScroll
 from textual.widgets import Static
 
+from mdview.palette import ACCENT, TEXT_MUTED
 from mdview.scroll_modal import ScrollableModalScreen
 
-# Theme accents (see theme.css): coral for section titles, green for keys.
-_TITLE_STYLE = "bold #d97757"
-_KEY_STYLE = "bold #4ebf71"
+# Theme accents (see theme.css): the purple accent for section titles, muted
+# grey for the key glyphs (bold sets them apart without a second hue).
+_TITLE_STYLE = f"bold {ACCENT}"
+_KEY_STYLE = f"bold {TEXT_MUTED}"
 
 # (section title, [(keys, description), ...]) in display order. Mirrors the
 # final key map in the design; update alongside MdViewerApp.BINDINGS.

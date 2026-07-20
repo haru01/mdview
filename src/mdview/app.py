@@ -16,7 +16,10 @@ from watchfiles import awatch
 
 from markdown_it.token import Token
 from rich.cells import cell_len
+from rich.console import Console as RichConsole
 from rich.markdown import Markdown as RichMarkdown
+from rich.text import Text as RichText
+from rich.theme import Theme as RichTheme
 from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -25,6 +28,7 @@ from textual.content import Content
 from textual.css.query import NoMatches
 from textual.geometry import Offset
 from textual.selection import SELECT_ALL, Selection
+from textual.theme import Theme
 from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import DirectoryTree, Input, Label, Markdown, MarkdownViewer, Static
@@ -54,6 +58,15 @@ from mdview.image_zoom import ZoomableImage
 from mdview.mermaid import MermaidRenderError, find_mmdc, render_mermaid
 from mdview.commit_log import CommitLogScreen
 from mdview.gitlog import Commit
+from mdview.palette import (
+    ACCENT,
+    ACCENT_BRIGHT,
+    BROKEN_LINK,
+    SEARCH_CURRENT_BG,
+    SEARCH_MATCH_BG,
+    TEXT,
+    TEXT_MUTED,
+)
 from mdview.project_grep import GrepResult, ProjectGrepScreen
 from mdview.quick_open import QuickOpenScreen
 from mdview.quickopen import DiffSource, build_entries, is_git_repo, list_viewable_files
@@ -130,21 +143,70 @@ _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 _MARKDOWN_EXTS = {".md", ".markdown", ".mdown", ".mkd"}
 
 # `/` search: colour applied to the matched substrings themselves (per-word, not
-# the whole block). The set gets a muted green wash; the current match (where
+# the whole block). The set gets a dim purple wash; the current match (where
 # n/N landed) a brighter, bold one. These strings parse for both Textual
 # `Content.highlight_regex` and Rich `Text.highlight_regex` (the DiffHunk path).
-_MATCH_HL = "on #335c46"
-_CURRENT_HL = "bold on #4ebf71"
+_MATCH_HL = f"on {SEARCH_MATCH_BG}"
+_CURRENT_HL = f"bold on {SEARCH_CURRENT_BG}"
 
-# `[[wikilink]]` link styling: coral underline for a resolvable link (the theme's
-# accent), a dim struck grey for a broken one (no such file in the tree) so a
-# missing target reads as "not created yet" at a glance.
-_WIKILINK_STYLE = "underline #d97757"
-_WIKILINK_BROKEN = "dim strike #b0705a"
+# `[[wikilink]]` link styling: an accent-purple underline for a resolvable link
+# (the theme's accent), a dim struck grey for a broken one (no such file in the
+# tree) so a missing target reads as "not created yet" at a glance.
+_WIKILINK_STYLE = f"underline {ACCENT}"
+_WIKILINK_BROKEN = f"dim strike {BROKEN_LINK}"
 
 # Wikilink hover preview: how much of the linked note's body to show (clamped;
 # the popup is a peek, not a scrollable reader).
 _WIKI_PREVIEW_CHARS = 1500
+
+# The hover preview is rendered with Rich's `Markdown`, whose default palette is
+# off ours (h2 red, inline code cyan, links blue). Remap the markdown element
+# styles onto the Obsidian palette so the peek matches the main view; keep the
+# heading/emphasis rules identical to theme.css (body-coloured + bold, muted at
+# H5/H6, purple only for code/links). Baked into a Text so Static shows these
+# exact colours regardless of Rich's own defaults.
+_PREVIEW_MD_THEME = RichTheme(
+    {
+        "markdown.h1": f"bold {TEXT}",
+        "markdown.h2": f"bold {TEXT}",
+        "markdown.h3": f"bold {TEXT}",
+        "markdown.h4": f"bold {TEXT}",
+        "markdown.h5": f"bold {TEXT_MUTED}",
+        "markdown.h6": f"bold {TEXT_MUTED}",
+        "markdown.strong": f"bold {TEXT}",
+        "markdown.em": f"italic {TEXT}",
+        "markdown.code": ACCENT,
+        "markdown.link": ACCENT,
+        "markdown.link_url": ACCENT,
+        "markdown.item.bullet": ACCENT,
+        "markdown.item.number": ACCENT,
+        "markdown.block_quote": TEXT_MUTED,
+        "markdown.hr": TEXT_MUTED,
+    },
+    inherit=True,
+)
+# Wrap width for the preview render, kept within `#wiki-hover`'s max-width (60).
+_WIKI_PREVIEW_WIDTH = 56
+
+
+def _render_preview_markdown(text: str) -> RichText:
+    """Render a note-body preview as a Rich ``Text`` coloured with the Obsidian
+    palette (see ``_PREVIEW_MD_THEME``), so the wikilink hover peek matches the
+    main view instead of Rich Markdown's default colours.
+
+    Rich resolves the ``markdown.*`` styles against the *rendering* console's
+    theme, and a Textual ``Static`` renders through Textual's console (which has
+    no such styles). So render through our own themed console and bake the colours
+    into a ``Text`` — those explicit colours then survive whatever renders it."""
+    console = RichConsole(
+        theme=_PREVIEW_MD_THEME,
+        width=_WIKI_PREVIEW_WIDTH,
+        color_system="truecolor",
+        force_terminal=True,
+    )
+    with console.capture() as capture:
+        console.print(RichMarkdown(text))
+    return RichText.from_ansi(capture.get().rstrip("\n"))
 
 
 def _action_arg(value: str) -> str:
@@ -158,7 +220,7 @@ def _frontmatter_content(display) -> Content | None:
     Returns None when there is nothing worth showing."""
     lines: list[Content] = []
     if display.title:
-        lines.append(Content(display.title).stylize("bold #d97757"))
+        lines.append(Content(display.title).stylize(f"bold {ACCENT}"))
     if display.meta_line:
         lines.append(Content(display.meta_line).stylize("dim"))
     if display.tags:
@@ -169,7 +231,7 @@ def _frontmatter_content(display) -> Content | None:
             chip = Content(f"#{tag}").stylize(
                 f"@click=app.tag_files('{_action_arg(tag)}')"
             )
-            parts.append(chip.stylize("#4ebf71 underline"))
+            parts.append(chip.stylize(f"{ACCENT} underline"))
         lines.append(Content("").join(parts))
     if display.sources:
         parts = [Content("📄 ")]
@@ -227,8 +289,9 @@ class _WikiHoverPopup(Static):
     tell a link apart from the prose around it). Content is clamped and overflow
     hidden — a peek of the linked note's body (frontmatter stripped).
 
-    Styled via `#wiki-hover` in theme.css (its look needs the theme's `$orange`
-    palette, which a widget's `DEFAULT_CSS` can't see).
+    Styled via `#wiki-hover` in theme.css (its frame needs the theme's `$accent`,
+    which a widget's `DEFAULT_CSS` can't see); the body text is themed by
+    `_render_preview_markdown` so it matches the main view's palette.
     """
 
 
@@ -258,6 +321,39 @@ class _CommandLine(Input):
 
     def action_cancel_edit(self) -> None:
         self.app._cancel_cmdline_edit()  # type: ignore[attr-defined]
+
+
+# Obsidian-flavoured dark theme: a near-monochrome greyscale lifted by a single
+# purple accent. Registered on mount so the `$surface`/`$panel`/`$text`/
+# `$text-muted` that theme.css builds on resolve to Obsidian's own values
+# (text/text-muted are pinned as variables so they land exactly). Base values
+# come from Obsidian's default dark theme (`--color-base-00` #1e1e1e background
+# through `--color-base-100` #dadada body, `--text-accent` #7f6df2).
+_OBSIDIAN_THEME = Theme(
+    name="obsidian",
+    dark=True,
+    primary=ACCENT,
+    accent=ACCENT,
+    background="#1e1e1e",
+    surface="#1e1e1e",
+    panel="#262626",
+    foreground=TEXT,
+    variables={
+        "text": TEXT,
+        "text-muted": TEXT_MUTED,
+        # Regular Markdown links wear the purple accent (Textual's default
+        # link-color is the body text). Wikilinks are styled separately (see
+        # _WIKILINK_STYLE); this covers `[text](url)` and anchor links.
+        "link-color": ACCENT,
+        # On hover, brighten the accent + underline rather than filling a solid
+        # background — Textual's default link-background-hover is the accent
+        # itself, which would paint purple-on-purple (unreadable). Obsidian-style:
+        # the link just lights up, no block fill.
+        "link-color-hover": ACCENT_BRIGHT,
+        "link-background-hover": "transparent",
+        "link-style-hover": "bold underline",
+    },
+)
 
 
 class MdViewerApp(App):
@@ -484,6 +580,8 @@ class MdViewerApp(App):
         yield _WikiHoverPopup(id="wiki-hover")
 
     async def on_mount(self) -> None:
+        self.register_theme(_OBSIDIAN_THEME)
+        self.theme = "obsidian"
         self.title = self._display_name
         if self._md_path is None:
             # No document yet (empty directory launch, or `--log`).
@@ -717,7 +815,7 @@ class MdViewerApp(App):
         if text is None:
             self._hide_wiki_hover()  # broken link: nothing to preview
             return
-        popup.update(RichMarkdown(text))
+        popup.update(_render_preview_markdown(text))
         popup.absolute_offset = self.mouse_position
         popup.display = True
         self._wiki_hover_target = target
