@@ -298,358 +298,6 @@ def test_colon_grep_command_opens_grep(tmp_path) -> None:
     asyncio.run(driver())
 
 
-def test_quick_open_lists_diff_sources_only_in_git_repo(tmp_path) -> None:
-    """The palette offers the git/gh diff sources only inside a git repo."""
-    import asyncio
-
-    from textual.widgets import OptionList
-
-    (tmp_path / "README.md").write_text("# r\n")
-
-    async def options_for(root: Path) -> list[str]:
-        app = MdViewerApp(root / "README.md", root_dir=root)
-        async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
-            await pilot.pause()
-            await pilot.press("ctrl+o")
-            await pilot.pause()
-            ol = app.screen.query_one("#quick-open-list", OptionList)
-            return [str(ol.get_option_at_index(i).prompt) for i in range(ol.option_count)]
-
-    async def driver() -> None:
-        # No .git → files only.
-        assert "git diff" not in await options_for(tmp_path)
-        # With .git → diff sources appear.
-        (tmp_path / ".git").mkdir()
-        opts = await options_for(tmp_path)
-        assert "git diff" in opts
-        assert "gh pr diff" in opts
-
-    asyncio.run(driver())
-
-
-def test_quick_open_diff_source_renders_captured_diff(tmp_path, monkeypatch) -> None:
-    """Selecting a diff source captures the diff and renders it delta-style."""
-    import asyncio
-
-    import mdview.diffsource as diffsource
-    from textual.widgets import OptionList
-    from mdview.diff_widget import DiffHunk
-
-    (tmp_path / "README.md").write_text("# r\n")
-    (tmp_path / ".git").mkdir()
-    sample = (FIXTURES / "sample.diff").read_text()
-    monkeypatch.setattr(diffsource, "capture_diff", lambda source, ref: sample)
-
-    async def driver() -> None:
-        app = MdViewerApp(tmp_path / "README.md", root_dir=tmp_path)
-        async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
-            await pilot.pause()
-
-            await pilot.press("ctrl+o")
-            await pilot.pause()
-            for ch in "gitdiff":
-                await pilot.press(ch)
-            await pilot.pause()
-            await pilot.press("enter")
-            await pilot.pause()
-            await pilot.pause()
-
-            # The captured diff is shown delta-style and marked transient.
-            assert list(app.query(DiffHunk)), "expected a DiffHunk from the captured diff"
-            assert app._transient_view
-            assert not app._is_dirty()  # nothing to save back to
-
-    asyncio.run(driver())
-
-
-def test_log_launch_opens_commit_browser_and_pick_shows_diff(tmp_path, monkeypatch) -> None:
-    """`--log` (open_log=True) opens the commit browser; picking a commit renders
-    its `git show` diff delta-style as a transient view."""
-    import asyncio
-
-    import mdview.gitlog as gitlog
-    from mdview.commit_log import CommitLogScreen
-    from mdview.diff_widget import DiffHunk
-    from mdview.gitlog import Commit
-
-    commits = [
-        Commit(hash="aaaa1111", short="aaaa111", author="Alice", date="2 days ago", subject="first"),
-        Commit(hash="bbbb2222", short="bbbb222", author="Bob", date="1 hour ago", subject="second"),
-    ]
-    sample = (FIXTURES / "sample.diff").read_text()
-    monkeypatch.setattr(gitlog, "capture_log", lambda limit: commits)
-    monkeypatch.setattr(gitlog, "capture_show", lambda commit_hash: sample)
-
-    async def driver() -> None:
-        app = MdViewerApp(None, root_dir=tmp_path, open_log=True)
-        async with app.run_test(size=(80, 24)) as pilot:
-            for _ in range(20):
-                await pilot.pause()
-                if isinstance(app.screen, CommitLogScreen):
-                    break
-            assert isinstance(app.screen, CommitLogScreen), "commit browser should open"
-
-            await pilot.press("enter")
-            for _ in range(20):
-                await pilot.pause()
-                if list(app.query(DiffHunk)):
-                    break
-            assert list(app.query(DiffHunk)), "picking a commit should show its diff"
-            assert app._transient_view
-            assert not app._is_dirty()
-
-    asyncio.run(driver())
-
-
-def test_log_launch_keeps_sidebar_closed(tmp_path, monkeypatch) -> None:
-    """`--log` opens the commit browser over an empty viewer; the file-tree
-    sidebar stays closed (it's only mounted on first `e`)."""
-    import asyncio
-
-    import mdview.gitlog as gitlog
-    from mdview.commit_log import CommitLogScreen
-    from mdview.gitlog import Commit
-
-    commits = [
-        Commit(hash="aaaa1111", short="aaaa111", author="Alice", date="2 days ago", subject="first"),
-    ]
-    monkeypatch.setattr(gitlog, "capture_log", lambda limit: commits)
-
-    async def driver() -> None:
-        app = MdViewerApp(None, root_dir=tmp_path, open_log=True)
-        async with app.run_test(size=(80, 24)) as pilot:
-            for _ in range(20):
-                await pilot.pause()
-                if isinstance(app.screen, CommitLogScreen):
-                    break
-            assert isinstance(app.screen, CommitLogScreen), "commit browser should open"
-            assert not app.query("#sidebar"), "sidebar should not be mounted on --log launch"
-
-    asyncio.run(driver())
-
-
-def test_l_key_opens_commit_browser(tmp_path, monkeypatch) -> None:
-    """The `l` shortcut opens the commit browser, just like `--log` / `:log`."""
-    import asyncio
-
-    import mdview.gitlog as gitlog
-    from mdview.commit_log import CommitLogScreen
-    from mdview.gitlog import Commit
-
-    commits = [
-        Commit(hash="aaaa1111", short="aaaa111", author="Alice", date="2 days ago", subject="first"),
-    ]
-    monkeypatch.setattr(gitlog, "capture_log", lambda limit: commits)
-
-    doc = tmp_path / "README.md"
-    doc.write_text("# Hello\n\nbody\n")
-
-    async def driver() -> None:
-        app = MdViewerApp(doc, root_dir=tmp_path)
-        async with app.run_test(size=(80, 24)) as pilot:
-            # Dismiss the auto-opened quick-open palette (directory launch).
-            await pilot.press("escape")
-            await pilot.pause()
-            await pilot.press("l")
-            for _ in range(20):
-                await pilot.pause()
-                if isinstance(app.screen, CommitLogScreen):
-                    break
-            assert isinstance(app.screen, CommitLogScreen), "`l` should open the commit browser"
-
-    asyncio.run(driver())
-
-
-def test_commit_show_with_metadata_renders_colored_diff_and_header(tmp_path, monkeypatch) -> None:
-    """`git show` output (commit metadata + diff) renders the metadata as a Markdown
-    header and the diff delta-style — proving the diff isn't shown as plain prose."""
-    import asyncio
-
-    import mdview.gitlog as gitlog
-    from textual.widgets._markdown import MarkdownH1, MarkdownH2
-    from mdview.commit_log import CommitLogScreen
-    from mdview.diff_widget import DiffHunk
-    from mdview.gitlog import Commit
-
-    git_show = (
-        "commit aaaa1111bbbb2222\n"
-        "Author: Alice <alice@example.com>\n"
-        "Date:   Mon Jun 16 10:00:00 2026 +0900\n"
-        "\n"
-        "    feat: add the thing\n"
-        "\n"
-        "    body explaining it\n"
-        "\n"
-        "diff --git a/foo.py b/foo.py\n"
-        "index 111..222 100644\n"
-        "--- a/foo.py\n"
-        "+++ b/foo.py\n"
-        "@@ -1,2 +1,2 @@\n"
-        "-old line\n"
-        "+new line\n"
-        " context\n"
-    )
-    commit = Commit(
-        hash="aaaa1111bbbb2222", short="aaaa111", author="Alice", date="2 days ago", subject="feat: add the thing"
-    )
-    monkeypatch.setattr(gitlog, "capture_log", lambda limit: [commit])
-    monkeypatch.setattr(gitlog, "capture_show", lambda commit_hash: git_show)
-    # With claude present, _inject_section_insights adds the 💡 AI button.
-    monkeypatch.setattr("mdview.app.find_claude", lambda: "claude")
-
-    async def driver() -> None:
-        app = MdViewerApp(None, root_dir=tmp_path, open_log=True)
-        async with app.run_test(size=(80, 24)) as pilot:
-            for _ in range(20):
-                await pilot.pause()
-                if isinstance(app.screen, CommitLogScreen):
-                    break
-            await pilot.press("enter")
-            for _ in range(20):
-                await pilot.pause()
-                if list(app.query(DiffHunk)):
-                    break
-
-            # The diff is delta-coloured (DiffHunk), not plain text.
-            assert list(app.query(DiffHunk)), "commit diff should render delta-style"
-            # The commit message is a Markdown header above it.
-            h1s = [str(h._content) for h in app.query(MarkdownH1)]
-            assert any("feat: add the thing" in t for t in h1s), "commit subject H1 missing"
-            # The per-file `## @ file` heading exists and carries the 💡 AI-insight
-            # button (added by _inject_section_insights when claude is present).
-            file_headings = [
-                h for h in app.query(MarkdownH2) if h._content.plain.startswith("@ ")
-            ]
-            assert file_headings, "diff file heading missing"
-            assert all(
-                h._content.plain.rstrip().endswith("💡") for h in file_headings
-            ), "diff file heading should carry the 💡 AI-insight button"
-            assert app._diff_files, "the diff model should be parsed for hunk injection"
-
-    asyncio.run(driver())
-
-
-def test_colon_log_command_opens_commit_browser(tmp_path, monkeypatch) -> None:
-    """`:log` opens the same commit browser."""
-    import asyncio
-
-    import mdview.gitlog as gitlog
-    from mdview.commit_log import CommitLogScreen
-    from mdview.gitlog import Commit
-
-    monkeypatch.setattr(
-        gitlog,
-        "capture_log",
-        lambda limit: [Commit(hash="h", short="h", author="A", date="now", subject="s")],
-    )
-
-    (tmp_path / "README.md").write_text("# r\n")
-
-    async def driver() -> None:
-        app = MdViewerApp(tmp_path / "README.md")  # no root_dir → no auto quick-open
-        async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
-            await pilot.pause()
-            await pilot.press("colon")
-            for ch in "log":
-                await pilot.press(ch)
-            await pilot.press("enter")
-            for _ in range(20):
-                await pilot.pause()
-                if isinstance(app.screen, CommitLogScreen):
-                    break
-            assert isinstance(app.screen, CommitLogScreen)
-
-    asyncio.run(driver())
-
-
-def test_opening_md_after_diff_clears_diff_widgets(tmp_path, monkeypatch) -> None:
-    """After viewing a captured diff, opening an md must drop the diff widgets.
-
-    `Markdown.update` only removes MarkdownBlocks, so injected DiffHunk widgets
-    would orphan and stay on screen — making the md look like it never opened.
-    """
-    import asyncio
-
-    import mdview.diffsource as diffsource
-    from textual.widgets._markdown import MarkdownParagraph
-    from mdview.diff_widget import DiffHunk
-
-    (tmp_path / "README.md").write_text("# Readme\n\nbody paragraph\n")
-    (tmp_path / ".git").mkdir()
-    sample = (FIXTURES / "sample.diff").read_text()
-    monkeypatch.setattr(diffsource, "capture_diff", lambda source, ref: sample)
-
-    async def driver() -> None:
-        app = MdViewerApp(tmp_path / "README.md", root_dir=tmp_path)
-        async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
-            await pilot.pause()
-
-            # Open the git diff.
-            await pilot.press("ctrl+o")
-            await pilot.pause()
-            for ch in "gitdiff":
-                await pilot.press(ch)
-            await pilot.pause()
-            await pilot.press("enter")
-            await pilot.pause()
-            await pilot.pause()
-            assert list(app.query(DiffHunk)), "diff should be showing"
-
-            # Now open the markdown file.
-            await pilot.press("ctrl+o")
-            await pilot.pause()
-            for ch in "readme":
-                await pilot.press(ch)
-            await pilot.pause()
-            await pilot.press("enter")
-            await pilot.pause()
-            await pilot.pause()
-
-            assert app._md_path == (tmp_path / "README.md").resolve()
-            assert not list(app.query(DiffHunk)), "stale diff widgets must be gone"
-            assert list(app.query(MarkdownParagraph)), "markdown should render"
-
-    asyncio.run(driver())
-
-
-def test_quick_open_empty_diff_shows_notice(tmp_path, monkeypatch) -> None:
-    """An empty diff leaves the current view in place with a notice."""
-    import asyncio
-
-    import mdview.diffsource as diffsource
-    from mdview.diff_widget import DiffHunk
-
-    (tmp_path / "README.md").write_text("# r\n")
-    (tmp_path / ".git").mkdir()
-    monkeypatch.setattr(diffsource, "capture_diff", lambda source, ref: "\n")
-
-    async def driver() -> None:
-        app = MdViewerApp(tmp_path / "README.md", root_dir=tmp_path)
-        async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
-            await pilot.pause()
-            before = app._md_path
-
-            await pilot.press("ctrl+o")
-            await pilot.pause()
-            for ch in "gitdiff":
-                await pilot.press(ch)
-            await pilot.pause()
-            await pilot.press("enter")
-            await pilot.pause()
-            await pilot.pause()
-
-            assert not list(app.query(DiffHunk))
-            assert app._md_path == before
-            assert not app._transient_view
-
-    asyncio.run(driver())
-
-
 def test_quick_open_arrow_moves_highlight_while_typing(tmp_path) -> None:
     """↓ moves the OptionList highlight even though the Input keeps focus."""
     import asyncio
@@ -1537,235 +1185,6 @@ def test_document_svg_renders_as_zoomable_image() -> None:
     asyncio.run(driver())
 
 
-def _diff_app(raw: str) -> MdViewerApp:
-    """Build a TUI app from a raw unified diff (parse once, pass the model)."""
-    from mdview.diff import diff_to_markdown, parse_diff
-
-    files = parse_diff(raw)
-    return MdViewerApp(content=diff_to_markdown(files), diff_files=files)
-
-
-def test_diff_fences_become_delta_hunk_widgets() -> None:
-    """A piped diff renders as delta-styled DiffHunk widgets, not raw fences."""
-    import asyncio
-
-    from textual.widgets._markdown import MarkdownFence
-
-    from mdview.diff_widget import DiffHunk
-
-    raw = "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1,2 +1,2 @@\n-old\n+new\n"
-
-    async def driver() -> None:
-        app = _diff_app(raw)
-        async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
-            await pilot.pause()
-            hunks = list(app.query(DiffHunk))
-            assert hunks, "expected a DiffHunk widget"
-            # the placeholder ```diff fence has been swapped out
-            assert not [
-                f for f in app.query(MarkdownFence) if (f.lexer or "").lower() == "diff"
-            ]
-            shown = str(hunks[0].render())
-            assert "old" in shown and "new" in shown
-
-    asyncio.run(driver())
-
-
-def test_diff_hunk_selection_yields_clean_unified_diff() -> None:
-    """Clicking a hunk selects it; the selected text is a valid diff (no gutter)."""
-    import asyncio
-
-    from mdview.diff_widget import DiffHunk
-
-    raw = "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1,2 +1,2 @@\n-old\n+new\n"
-
-    async def driver() -> None:
-        app = _diff_app(raw)
-        async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
-            await pilot.pause()
-            hunk = app.query(DiffHunk).first()
-            await pilot.click(hunk)
-            await pilot.pause()
-            selected = app.screen.get_selected_text() or ""
-            assert selected == "@@ -1,2 +1,2 @@\n-old\n+new", selected
-
-    asyncio.run(driver())
-
-
-def test_bracket_navigates_between_file_headings() -> None:
-    """With @@ no longer a heading, `]` jumps between the `##` file headings."""
-    import asyncio
-
-    from textual.widgets import MarkdownViewer
-
-    raw = "".join(
-        f"diff --git a/file{f}.txt b/file{f}.txt\n"
-        f"--- a/file{f}.txt\n+++ b/file{f}.txt\n"
-        "@@ -1,20 +1,20 @@\n"
-        + "".join(f" ctx {f}-{k}\n" for k in range(20))
-        + f"-old{f}\n+new{f}\n"
-        for f in range(3)
-    )
-
-    async def driver() -> None:
-        app = _diff_app(raw)
-        async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
-            await pilot.pause()
-            viewer = app.query_one(MarkdownViewer)
-            start = viewer.scroll_y
-            await pilot.press("right_square_bracket")
-            await pilot.pause()
-            assert viewer.scroll_y > start, "`]` should jump to the next file heading"
-
-    asyncio.run(driver())
-
-
-def test_brace_navigates_between_hunks() -> None:
-    """`}` jumps to the next hunk within the diff (hunks are no longer headings)."""
-    import asyncio
-
-    from textual.widgets import MarkdownViewer
-
-    raw = (
-        "diff --git a/big.py b/big.py\n--- a/big.py\n+++ b/big.py\n"
-        "@@ -1,20 +1,20 @@\n"
-        + "".join(f" ctx a{k}\n" for k in range(20))
-        + "-old1\n+new1\n"
-        "@@ -60,20 +60,20 @@\n"
-        + "".join(f" ctx b{k}\n" for k in range(20))
-        + "-old2\n+new2\n"
-    )
-
-    async def driver() -> None:
-        app = _diff_app(raw)
-        async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
-            await pilot.pause()
-            viewer = app.query_one(MarkdownViewer)
-            start = viewer.scroll_y
-            await pilot.press("right_curly_bracket")
-            await pilot.pause()
-            assert viewer.scroll_y > start, "`}` should jump to the next hunk"
-
-    asyncio.run(driver())
-
-
-def test_diff_file_heading_hugs_its_first_hunk() -> None:
-    """No blank row between a `## file` heading and its first `@@` hunk."""
-    import asyncio
-
-    from textual.widgets._markdown import MarkdownHeader
-
-    from mdview.diff_widget import DiffHunk
-
-    raw = "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1,2 +1,2 @@\n-a\n+A\n"
-
-    async def driver() -> None:
-        app = _diff_app(raw)
-        async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
-            await pilot.pause()
-            heading = app.query(MarkdownHeader).first()
-            hunk = app.query(DiffHunk).first()
-            assert hunk.region.y == heading.region.bottom, "the @@ hunk should hug the heading"
-
-    asyncio.run(driver())
-
-
-def test_embedded_diff_fence_in_markdown_becomes_hunk_widget() -> None:
-    """A ```diff fence inside ordinary Markdown is upgraded to a DiffHunk too."""
-    import asyncio
-
-    from mdview.diff_widget import DiffHunk
-
-    # Not a whole diff (so diff_files is None) — the embedded-fence branch runs.
-    md = "# Doc\n\nExample:\n\n```diff\n-old\n+new\n```\n\nEnd.\n"
-
-    async def driver() -> None:
-        app = MdViewerApp(content=md)
-        async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
-            await pilot.pause()
-            hunks = list(app.query(DiffHunk))
-            assert len(hunks) == 1
-            await pilot.click(hunks[0])
-            await pilot.pause()
-            assert (app.screen.get_selected_text() or "") == "-old\n+new"
-
-    asyncio.run(driver())
-
-
-def test_diff_hunk_selection_expands_to_its_file_section() -> None:
-    """Clicking a hunk again expands to its `## file` section, not the next file."""
-    import asyncio
-
-    from mdview.diff_widget import DiffHunk
-
-    raw = (
-        "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-a\n+A\n"
-        "diff --git a/b.py b/b.py\n--- a/b.py\n+++ b/b.py\n@@ -1 +1 @@\n-b\n+B\n"
-    )
-
-    async def driver() -> None:
-        app = _diff_app(raw)
-        async with app.run_test(size=(100, 40)) as pilot:
-            await pilot.pause()
-            await pilot.pause()
-            hunk = app.query(DiffHunk).first()  # a.py's hunk
-            await pilot.click(hunk)
-            await pilot.pause()
-            first = app.screen.get_selected_text() or ""
-            assert first == "@@ -1 +1 @@\n-a\n+A", first
-
-            await pilot.click(hunk)  # expand one rung → the a.py file section
-            await pilot.pause()
-            second = app.screen.get_selected_text() or ""
-            assert "a.py" in second and "+A" in second, second
-            assert "b.py" not in second and "+B" not in second, second
-            assert len(second) > len(first)
-
-    asyncio.run(driver())
-
-
-def test_ask_ai_on_diff_hunk_sends_clean_diff(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Selecting a hunk and pressing `h` feeds Ask AI a valid unified diff."""
-    import asyncio
-    import os
-    import shutil
-
-    from tests.test_ai import _fake_claude
-    from mdview.ask_ai import AskAiScreen
-    from mdview.diff_widget import DiffHunk
-
-    claude = _fake_claude(tmp_path)
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
-    shutil.copy(claude, bindir / "claude")
-    (bindir / "claude").chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
-
-    raw = "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1,2 +1,2 @@\n-old\n+new\n"
-
-    async def driver() -> None:
-        app = _diff_app(raw)
-        async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
-            await pilot.pause()
-            await pilot.click(app.query(DiffHunk).first())
-            await pilot.pause()
-            await pilot.press("h")
-            await pilot.pause()
-            assert isinstance(app.screen, AskAiScreen)
-            assert app.screen._selection == "@@ -1,2 +1,2 @@\n-old\n+new"
-
-    asyncio.run(driver())
-
-
 def test_mermaid_fence_replaced_when_mmdc_available(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2108,16 +1527,55 @@ def test_toc_popup_jk_navigate_tree() -> None:
     asyncio.run(driver())
 
 
+def test_diff_fence_stays_a_plain_code_block() -> None:
+    """Diff *viewing* is gone, so a ```diff fence authored in ordinary Markdown
+    is left as an ordinary code block — no widget is swapped in for it."""
+    import asyncio
+
+    from textual.widgets import MarkdownViewer
+    from textual.widgets._markdown import MarkdownFence
+
+    md = (
+        "# Notes\n\n"
+        "An example patch:\n\n"
+        "```diff\n@@ -1,2 +1,2 @@\n-old line\n+new line\n```\n"
+    )
+
+    async def driver() -> None:
+        app = MdViewerApp(content=md)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            viewer = app.query_one(MarkdownViewer)
+            fences = [
+                f
+                for f in viewer.document.query(MarkdownFence)
+                if (f.lexer or "").lower() == "diff"
+            ]
+            assert len(fences) == 1, "the diff fence must survive as a code block"
+            assert "old line" in fences[0].code
+
+    asyncio.run(driver())
+
+
 # --- `/` keyword search ------------------------------------------------------
 
-_MULTI_FILE_DIFF = "".join(
-    f"diff --git a/file{f}.txt b/file{f}.txt\n"
-    f"--- a/file{f}.txt\n+++ b/file{f}.txt\n"
-    "@@ -1,20 +1,20 @@\n"
-    + "".join(f" ctx {f}-{k}\n" for k in range(20))
-    + f"-old{f}\n+new{f}\n"
-    for f in range(3)
+# Three sections, each with a tall fence carrying exactly one `old<N>` — so a
+# `/old` search yields one hit per section in three *distinct* blocks, far
+# enough apart that stepping with `n`/`N` visibly moves the scroll.
+_MULTI_SECTION_DOC = "".join(
+    f"## section{s}\n\n"
+    "```text\n"
+    + "".join(f"ctx {s}-{k}\n" for k in range(20))
+    + f"old{s}\nnew{s}\n"
+    "```\n\n"
+    for s in range(3)
 )
+
+
+def _search_app() -> MdViewerApp:
+    """A tall multi-section document for the `/` search tests."""
+    return MdViewerApp(content=_MULTI_SECTION_DOC)
 
 
 async def _submit_search(pilot, query: str) -> None:
@@ -2243,36 +1701,6 @@ def test_search_reopens_prefilled_with_slash_and_last_query() -> None:
     asyncio.run(driver())
 
 
-def test_search_double_at_matches_only_hunks() -> None:
-    """`/@@` filters to the diff's hunks (file headings have a single `@`)."""
-    import asyncio
-
-    from textual.widgets import MarkdownViewer
-
-    from mdview.diff_widget import DiffHunk
-
-    async def driver() -> None:
-        app = _diff_app(_MULTI_FILE_DIFF)
-        async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
-            await pilot.pause()
-            viewer = app.query_one(MarkdownViewer)
-            start = viewer.scroll_y
-            await _submit_search(pilot, "@@")
-            assert app._search_matches, "expected matches for @@"
-            assert all(isinstance(w, DiffHunk) for w in app._search_matches)
-            assert len(app._search_matches) == 3
-            assert viewer.scroll_y > start, "should jump to the first hunk match"
-            # the bar stays visible as a status line while a search is active
-            assert app.query_one("#cmdline-bar").display is True
-            # exactly one block is marked the "current" one
-            current = list(viewer.document.query(".search-current"))
-            assert len(current) == 1
-            assert current[0] is app._search_hits[app._search_index][0]
-
-    asyncio.run(driver())
-
-
 def test_search_current_marker_moves_with_n() -> None:
     """The distinct `.search-current` highlight follows `n`/`N`."""
     import asyncio
@@ -2280,7 +1708,7 @@ def test_search_current_marker_moves_with_n() -> None:
     from textual.widgets import MarkdownViewer
 
     async def driver() -> None:
-        app = _diff_app(_MULTI_FILE_DIFF)
+        app = _search_app()
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
             await pilot.pause()
@@ -2321,24 +1749,6 @@ def test_search_steps_through_each_occurrence_in_one_block() -> None:
     asyncio.run(driver())
 
 
-def test_search_anchored_at_matches_only_file_headings() -> None:
-    """`/^@ ` filters to the `@ `-prefixed file headings, not the `@@` hunks."""
-    import asyncio
-
-    from textual.widgets._markdown import MarkdownHeader
-
-    async def driver() -> None:
-        app = _diff_app(_MULTI_FILE_DIFF)
-        async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
-            await pilot.pause()
-            await _submit_search(pilot, "^@ ")
-            assert len(app._search_matches) == 3
-            assert all(isinstance(w, MarkdownHeader) for w in app._search_matches)
-
-    asyncio.run(driver())
-
-
 def test_search_then_n_N_walk_matches() -> None:
     """While a search is active, `n`/`N` step through the matches."""
     import asyncio
@@ -2346,7 +1756,7 @@ def test_search_then_n_N_walk_matches() -> None:
     from textual.widgets import MarkdownViewer
 
     async def driver() -> None:
-        app = _diff_app(_MULTI_FILE_DIFF)
+        app = _search_app()
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
             await pilot.pause()
@@ -2369,7 +1779,7 @@ def test_empty_search_clears_matches() -> None:
     import asyncio
 
     async def driver() -> None:
-        app = _diff_app(_MULTI_FILE_DIFF)
+        app = _search_app()
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
             await pilot.pause()
@@ -2389,7 +1799,7 @@ def test_search_no_match_keeps_empty_matches() -> None:
     import asyncio
 
     async def driver() -> None:
-        app = _diff_app(_MULTI_FILE_DIFF)
+        app = _search_app()
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
             await pilot.pause()
@@ -2643,7 +2053,7 @@ def test_escape_clears_active_search_without_quitting() -> None:
     import asyncio
 
     async def driver() -> None:
-        app = _diff_app(_MULTI_FILE_DIFF)
+        app = _search_app()
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
             await pilot.pause()
@@ -2736,31 +2146,6 @@ def test_space_navigates_headings_in_prose() -> None:
             await pilot.press("shift+space")
             await pilot.pause()
             assert viewer.scroll_y < second, "Shift+Space should step back"
-
-    asyncio.run(driver())
-
-
-def test_space_walks_files_and_hunks_in_diff() -> None:
-    """In a diff, Space stops at file headings and `@@` hunks (both)."""
-    import asyncio
-
-    from textual.widgets import MarkdownViewer
-
-    async def driver() -> None:
-        app = _diff_app(_MULTI_FILE_DIFF)
-        async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
-            await pilot.pause()
-            viewer = app.query_one(MarkdownViewer)
-            # The combined target set is headings + hunks, so Space has more
-            # stops than the heading-only `]` walk.
-            sections = app._section_targets()
-            headings = app._all_headings()
-            assert len(sections) > len(headings), "diff sections include hunks too"
-            start = viewer.scroll_y
-            await pilot.press("space")
-            await pilot.pause()
-            assert viewer.scroll_y > start, "Space should advance through the diff"
 
     asyncio.run(driver())
 
@@ -3062,118 +2447,6 @@ def test_section_insight_uses_extended_timeout_and_concise_svg(
     asyncio.run(driver())
 
 
-_DIFF_TWO_FILES = (
-    "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n"
-    "@@ -1,2 +1,2 @@\n-old_x\n+new_x\n"
-    "diff --git a/y.py b/y.py\n--- a/y.py\n+++ b/y.py\n"
-    "@@ -1,2 +1,2 @@\n-old_y\n+new_y\n"
-)
-
-
-def test_diff_file_headings_gain_insight_lightbulb(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Opening a diff gives each `## @ file` heading a clickable 💡, just like a
-    prose section heading (the feature is no longer skipped for diffs)."""
-    import asyncio
-
-    from textual.widgets._markdown import MarkdownH2
-
-    monkeypatch.setattr("mdview.app.find_claude", lambda: "claude")
-
-    async def driver() -> None:
-        app = _diff_app(_DIFF_TWO_FILES)
-        async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
-            await pilot.pause()
-            assert app._diff_files is not None
-            assert len(app._insight_headings) == 2, "one marker per diffed file"
-            for h in app.query(MarkdownH2):
-                assert h._content.plain.rstrip().endswith("💡"), h._content.plain
-
-    asyncio.run(driver())
-
-
-def test_diff_insight_uses_diff_question(monkeypatch: pytest.MonkeyPatch) -> None:
-    """For a diff, the insight prompt is `_DIFF_INSIGHT_QUESTION` (about the
-    change), not the prose `_INSIGHT_QUESTION`; the file's diff is the selection."""
-    import asyncio
-
-    from mdview.app import _DIFF_INSIGHT_QUESTION
-
-    captured: dict = {}
-
-    async def fake_ask(
-        selection, question, document, *, claude, cwd,
-        svg_out_dir=None, concise_svg=False, timeout=120.0,
-    ):
-        captured["question"] = question
-        captured["selection"] = selection
-        return "この差分の解説です。"
-
-    monkeypatch.setattr("mdview.app.find_claude", lambda: "claude")
-    monkeypatch.setattr("mdview.app.ask_claude", fake_ask)
-
-    async def driver() -> None:
-        app = _diff_app(_DIFF_TWO_FILES)
-        async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
-            await pilot.pause()
-            hid = next(iter(app._insight_headings))
-            app.action_section_insight(hid)
-            for _ in range(60):
-                await pilot.pause()
-                if app._insight_state[hid].status == "done":
-                    break
-            assert captured["question"] == _DIFF_INSIGHT_QUESTION
-            assert "@ x.py" in captured["selection"], captured["selection"]
-            assert "```diff" in captured["selection"]
-
-    asyncio.run(driver())
-
-
-def test_diff_insight_run_opens_modal(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Clicking a diff file's 💡 runs claude, turns it into 📦, and a second click
-    opens the same explanation modal used for prose sections."""
-    import asyncio
-
-    from mdview.section_insight import SectionInsightScreen
-
-    monkeypatch.setattr("mdview.app.find_claude", lambda: "claude")
-
-    async def fake_ask(
-        selection, question, document, *, claude, cwd,
-        svg_out_dir=None, concise_svg=False, timeout=120.0,
-    ):
-        if svg_out_dir is not None:
-            svg_out_dir.mkdir(parents=True, exist_ok=True)
-            (svg_out_dir / "diagram.svg").write_text(_INSIGHT_SVG, encoding="utf-8")
-        return "この差分の解説です。"
-
-    monkeypatch.setattr("mdview.app.ask_claude", fake_ask)
-
-    async def driver() -> None:
-        app = _diff_app(_DIFF_TWO_FILES)
-        async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
-            await pilot.pause()
-            hid = next(iter(app._insight_headings))
-            heading = app._insight_headings[hid]
-            app.action_section_insight(hid)
-            for _ in range(60):
-                await pilot.pause()
-                if app._insight_state[hid].status == "done":
-                    break
-            assert app._insight_state[hid].status == "done"
-            assert heading._content.plain.rstrip().endswith("📦"), heading._content.plain
-            assert app._insight_state[hid].svgs, "the saved SVG should be collected"
-
-            app.action_section_insight(hid)
-            await pilot.pause()
-            await pilot.pause()
-            assert isinstance(app.screen, SectionInsightScreen)
-
-    asyncio.run(driver())
-
-
 def test_external_change_reloads_in_place() -> None:
     """An external write is picked up by `_reload_from_disk`, updating the buffer
     and the disk baseline while preserving scroll position."""
@@ -3355,54 +2628,6 @@ def test_y_without_selection_notifies_and_keeps_clipboard_empty() -> None:
     asyncio.run(scenario())
 
 
-def test_load_file_renders_diff_as_hunks() -> None:
-    """Loading a .diff via _load_file renders delta-style hunks, not a code block."""
-    import asyncio
-
-    from mdview.diff_widget import DiffHunk
-
-    async def scenario() -> None:
-        app = MdViewerApp(FIXTURES / "simple.md")
-        async with app.run_test() as pilot:
-            await app._load_file(FIXTURES / "sample.diff")
-            await pilot.pause()
-            assert app.query(DiffHunk)
-            assert app._diff_files is not None
-
-    asyncio.run(scenario())
-
-
-def test_external_change_to_diff_file_keeps_delta_rendering(tmp_path) -> None:
-    """An external edit to a loaded diff file stays delta-rendered, not raw."""
-    import asyncio
-
-    from mdview.diff_widget import DiffHunk
-
-    async def scenario() -> None:
-        diff_a = (
-            "--- a/foo.py\n+++ b/foo.py\n@@ -1,2 +1,2 @@\n"
-            "-old line\n+new line\n unchanged\n"
-        )
-        diff_b = (
-            "--- a/foo.py\n+++ b/foo.py\n@@ -1,2 +1,2 @@\n"
-            "-old line\n+changed again\n unchanged\n"
-        )
-        diff_path = tmp_path / "x.diff"
-        diff_path.write_text(diff_a)
-        app = MdViewerApp(diff_path)
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            assert app.query(DiffHunk)  # delta-rendered on initial load
-            assert app._diff_files is not None
-            diff_path.write_text(diff_b)  # external edit
-            await app._reload_from_disk()
-            await pilot.pause()
-            assert app.query(DiffHunk)  # STILL delta, not raw markdown
-            assert app._diff_files is not None
-
-    asyncio.run(scenario())
-
-
 def test_e_toggles_sidebar_visibility():
     import asyncio
 
@@ -3437,7 +2662,7 @@ def test_selecting_tree_file_switches_viewer():
             await pilot.press("e")  # open the file-tree sidebar
             await pilot.pause()
             sidebar = app.query_one("#sidebar", DirectoryTree)
-            target = (FIXTURES / "sample.diff").resolve()
+            target = (FIXTURES / "sample.md").resolve()
             app.on_directory_tree_file_selected(
                 DirectoryTree.FileSelected(sidebar.root, target)
             )

@@ -33,11 +33,6 @@ def test_grep_commands() -> None:
     assert parse_command("g") == "grep"
 
 
-def test_log_commands() -> None:
-    assert parse_command("log") == "log"
-    assert parse_command("gitlog") == "log"
-
-
 def test_whitespace_and_case_are_ignored() -> None:
     assert parse_command("  Q  ") == "quit"
     assert parse_command("Help") == "help"

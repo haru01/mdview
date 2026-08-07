@@ -9,15 +9,13 @@ to the viewport and never overflows).
 
 Selection is overridden so the *displayed* text (box-drawing characters) and the
 *selectable* text differ: selecting a flow (for copy or Ask AI) yields the
-original `event-flow-svg` DSL, which reads well as a prompt. This mirrors
-`DiffHunk`, whose selection returns a clean unified diff rather than its gutter.
+original `event-flow-svg` DSL, which reads well as a prompt.
 Because `MdViewerApp._apply_scope` selects the widget *and all its descendants*,
 the inner `Static` must not contribute its box-art — so its `get_selection`
 returns ``None`` and only the container yields the DSL.
 
 It lives in its own module so `mdview.selection` can treat `EventFlow` as an
-atomic block without importing `mdview.app` (which would be circular) — the same
-arrangement as `DiffHunk`.
+atomic block without importing `mdview.app` (which would be circular).
 """
 
 from __future__ import annotations

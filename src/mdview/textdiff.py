@@ -1,11 +1,10 @@
 """Generate a unified diff from two in-memory strings (for the AI edit preview).
 
 Kept framework-free (like diff.py / search.py / command.py) so it is unit-
-testable without Textual. This is the *generation* counterpart to diff.py, which
-*parses* external unified diffs: the AI edit loop turns a scope's original text
-and Claude's edited text into a unified-diff string, which `diff.parse_diff` +
-`diffview.render_hunk` then render in the existing delta style — reusing the diff
-viewer to preview an edit without going through the diff-*file* pipeline.
+testable without Textual. It is the head of the edit-preview stack: the AI edit
+loop turns a scope's original text and Claude's edited text into a unified-diff
+string here, which `diff.parse_hunks` → `diffview.render_hunk` then render in
+`diff_preview.DiffPreviewScreen` for the user to accept or reject.
 """
 
 from __future__ import annotations
@@ -18,8 +17,8 @@ def build_unified_diff(original: str, edited: str, *, label: str = "section") ->
 
     Returns ``""`` when the two are identical — the caller's no-op signal (don't
     open an empty preview). The ``label`` only names the ``---``/``+++`` header
-    lines, which `parse_diff` consumes to mark the single "file"; the preview
-    renders hunks, so the label is otherwise cosmetic. Lines are split keeping
+    lines, which the preview skips (it renders hunks), so it is cosmetic. Lines
+    are split keeping
     their newlines so difflib emits a correct hunk even when an input lacks a
     trailing newline.
     """

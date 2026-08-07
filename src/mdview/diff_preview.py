@@ -1,9 +1,9 @@
 """Modal previewing an AI edit as a delta-style diff before it is applied.
 
 The AI edit loop never overwrites the buffer blindly: Claude's edited text is
-diffed against the original scope and shown here in the same delta look as the
-diff viewer, reusing the pure stack (`textdiff.build_unified_diff` →
-`diff.parse_diff` → `diffview.render_hunk`). `y` accepts (dismiss True);
+diffed against the original scope and shown here in a `delta`-like style via the
+pure stack (`textdiff.build_unified_diff` → `diff.parse_hunks` →
+`diffview.render_hunk`). `y` accepts (dismiss True);
 `n`/`Esc`/`q` reject (dismiss False). The caller owns the buffer update — this
 screen only shows the change and resolves the decision.
 """
@@ -16,7 +16,7 @@ from textual.app import ComposeResult
 from textual.containers import Container, ScrollableContainer, VerticalScroll
 from textual.widgets import Static
 
-from mdview.diff import parse_diff
+from mdview.diff import parse_hunks
 from mdview.diffview import render_hunk
 from mdview.scroll_modal import ScrollableModalScreen
 from mdview.textdiff import build_unified_diff
@@ -49,10 +49,9 @@ class DiffPreviewScreen(ScrollableModalScreen):
     def _render_preview(self) -> RenderableType:
         diff = build_unified_diff(self._original, self._edited, label=self._label)
         parts: list[RenderableType] = []
-        for file in parse_diff(diff):
-            for hunk in file.hunks:
-                parts.append(render_hunk(hunk, file_path=self._file_path))
-                parts.append(Text())  # blank line between hunks
+        for hunk in parse_hunks(diff):
+            parts.append(render_hunk(hunk, file_path=self._file_path))
+            parts.append(Text())  # blank line between hunks
         return Group(*parts) if parts else Text("(変更なし)")
 
     def compose(self) -> ComposeResult:

@@ -10,7 +10,6 @@ from textual.containers import Container, ScrollableContainer, Vertical, Vertica
 from textual.widgets import Checkbox, Input, LoadingIndicator, Markdown, Static
 
 from mdview.ai import AiQueryError, ask_claude
-from mdview.diffview import is_diff_text, render_selection
 from mdview.scroll_modal import ScrollableModalScreen
 from mdview.svg import extract_svgs
 from mdview.svg_widgets import render_svgs_into
@@ -20,11 +19,10 @@ class SelectionViewScreen(ScrollableModalScreen):
     """Nested modal showing the full selected text.
 
     The Ask AI context line only previews the selection (whitespace-collapsed,
-    truncated); clicking it opens this to read the whole thing. A diff selection
-    gets the delta look (`render_selection`); everything else is re-rendered with
-    a Markdown widget so it shares the *main view's* colours and line spacing
-    (theme.css styles `Markdown`/`MarkdownBlock` by type, so a bare `Markdown`
-    here inherits them). Scrollable via the inherited movement keys.
+    truncated); clicking it opens this to read the whole thing. The text is
+    re-rendered with a Markdown widget so it shares the *main view's* colours and
+    line spacing (theme.css styles `Markdown`/`MarkdownBlock` by type, so a bare
+    `Markdown` here inherits them). Scrollable via the inherited movement keys.
     """
 
     BINDINGS = [
@@ -40,10 +38,7 @@ class SelectionViewScreen(ScrollableModalScreen):
         with Container(id="selection-view-dialog") as dialog:
             dialog.border_title = "選択テキスト"
             with VerticalScroll(id="selection-view-body"):
-                if is_diff_text(self._text):
-                    yield Static(render_selection(self._text))
-                else:
-                    yield Markdown(self._text)
+                yield Markdown(self._text)
 
     def scroll_region(self) -> ScrollableContainer:
         return self.query_one("#selection-view-body", VerticalScroll)

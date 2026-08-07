@@ -1,15 +1,16 @@
 """The quick-open fuzzy finder modal (``Ctrl+P`` / ``:e``).
 
 A thin Textual wrapper over ``quickopen.py``: an input box whose every keystroke
-re-ranks the entries (viewable files, plus git/gh diff sources in a repo) with an
-fzf-style subsequence match into an ``OptionList``, and Enter dismisses with the
-chosen entry's payload (an absolute file path or a ``DiffSource``). The app routes
-that to navigation or a captured-diff view. Mirrors ``toc.py``'s pattern — a plain
+re-ranks the viewable files with an fzf-style subsequence match into an
+``OptionList``, and Enter dismisses with the chosen entry's payload (an absolute
+file path) for the app to navigate to. Mirrors ``toc.py``'s pattern — a plain
 ``ModalScreen`` that delegates list movement to the widget so the keys work while
 the input keeps focus.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 from rich.text import Text
 from textual.app import ComposeResult
@@ -39,12 +40,12 @@ class QuickOpenScreen(ModalScreen):
     ]
 
     def __init__(
-        self, entries: list[QuickOpenEntry], *, current: object = None
+        self, entries: list[QuickOpenEntry], *, current: Path | None = None
     ) -> None:
         super().__init__()
         self._entries = entries
-        # The payload to preselect when the query is empty (the file currently
-        # being viewed), so opening the palette highlights "where you are".
+        # The file to preselect when the query is empty (the one currently being
+        # viewed), so opening the palette highlights "where you are".
         self._current = current
         # The ranked top slice currently shown, in display order; the highlighted
         # index maps into it (paired with each match's highlight offsets).

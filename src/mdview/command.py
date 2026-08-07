@@ -1,6 +1,6 @@
 """`:` command-line parsing for the TUI.
 
-Kept framework-free (like search.py / diff.py) so it is unit-testable without a
+Kept framework-free (like search.py) so it is unit-testable without a
 Textual app: `parse_command` maps the text typed after the `:` prompt to a
 canonical command name the app dispatches. Unknown or empty input returns None
 so the app can hide the bar silently (empty) or warn (unknown — the caller
@@ -13,9 +13,8 @@ from __future__ import annotations
 # `:h`/`:help` open help. The AI edit loop adds `:w` (write the buffer), `:q!`
 # (force quit, discarding unsaved edits), `:wq` (write then quit), and `:undo`
 # (revert the last applied edit). `:e`/`:edit`/`:open`/`:o` open the quick-open
-# fuzzy finder (also bound to Ctrl+O), `:grep`/`:g` open the project-wide grep
-# finder (also bound to Ctrl+G), and `:log`/`:gitlog` open the commit browser
-# (also bound to `l` / reachable via the `--log` CLI flag).
+# fuzzy finder (also bound to Ctrl+O), and `:grep`/`:g` open the project-wide
+# grep finder (also bound to Ctrl+G).
 _COMMANDS = {
     "q": "quit",
     "quit": "quit",
@@ -35,8 +34,6 @@ _COMMANDS = {
     "o": "open",
     "grep": "grep",
     "g": "grep",
-    "log": "log",
-    "gitlog": "log",
 }
 
 
