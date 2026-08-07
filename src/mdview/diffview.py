@@ -1,11 +1,8 @@
 """Render a parsed diff hunk in a `delta`-like style as a Rich `Text`.
 
-Pure and framework-free: produces Rich renderables that both the TUI
-(`mdview.diff_widget.DiffHunk`, which returns the `Text` from its `render`) and
-the non-TTY path (`mdview.render.print_diff`) consume. A single `Text` keeps the
-hunk text-selectable in Textual (its `Widget.get_selection` extracts from
-`Content`/`Text`), while still carrying per-line background bars and per-language
-syntax highlighting.
+Pure and framework-free. The only consumer is the AI edit preview
+(`mdview.diff_preview.DiffPreviewScreen`), which mounts the returned `Text` on a
+`Static` so the proposed change reads like `delta` output before it is applied.
 
 Layout per line: ``{old# } {new# } {marker} {code}`` — a two-column line-number
 gutter, the `+`/`-`/space marker (kept so a copied/selected diff stays valid),
@@ -15,12 +12,10 @@ green background bar, removed lines a red one.
 
 from __future__ import annotations
 
-from rich.console import Group, RenderableType
-from rich.rule import Rule
 from rich.syntax import Syntax
 from rich.text import Text
 
-from mdview.diff import FileDiff, Hunk, looks_like_diff, parse_diff, parse_hunk_lines
+from mdview.diff import Hunk
 from mdview.palette import DIFF_ADD_BG, DIFF_DEL_BG, DIFF_FILE_RULE
 
 # Background bars for changed lines (dark, low-saturation so syntax fg stays
@@ -28,14 +23,9 @@ from mdview.palette import DIFF_ADD_BG, DIFF_DEL_BG, DIFF_FILE_RULE
 ADD_BG = DIFF_ADD_BG
 DEL_BG = DIFF_DEL_BG
 GUTTER_STYLE = "dim"
-# The `@@` hunk-header line and the non-TTY file banner follow the accent hue.
+# The `@@` hunk-header line follows the accent hue.
 HEADER_STYLE = f"dim {DIFF_FILE_RULE}"
 _SYNTAX_THEME = "ansi_dark"
-
-
-def hunk_plain_text(hunk: Hunk) -> str:
-    """The selectable / Ask-AI text for a hunk: its raw unified-diff form."""
-    return hunk.raw
 
 
 def guess_lexer(path: str | None) -> str | None:
@@ -105,40 +95,3 @@ def _zip_lines(lines: list[Text], hunk: Hunk):
     for i, line in enumerate(lines):
         source = hunk.lines[i - offset] if i >= offset else None
         yield line, source
-
-
-def render_file(file: FileDiff) -> RenderableType:
-    """A file's delta-styled diff for the non-TTY path: banner + hunks."""
-    title = f"{file.path}{' (' + file.status + ')' if file.status else ''}"
-    parts: list[RenderableType] = [Rule(title, style=DIFF_FILE_RULE)]
-    if file.binary_note:
-        parts.append(Text(file.binary_note, style="dim"))
-    for hunk in file.hunks:
-        parts.append(render_hunk(hunk, file_path=file.path))
-        parts.append(Text())  # blank line between hunks
-    return Group(*parts)
-
-
-def render_diff(files: list[FileDiff]) -> RenderableType:
-    """The whole diff, delta-styled, for the non-TTY path."""
-    return Group(*(render_file(file) for file in files))
-
-
-def is_diff_text(text: str) -> bool:
-    """Whether a selection should get the delta look — a unified diff, or a bare
-    ``@@`` hunk (which is what a selected `DiffHunk` yields) — rather than being
-    re-rendered as Markdown."""
-    return looks_like_diff(text) or text.lstrip().startswith("@@")
-
-
-def render_selection(text: str) -> RenderableType:
-    """Delta-style render of a *diff* selection for the Ask AI full-text popup.
-
-    The caller gates on `is_diff_text`; non-diff selections are re-rendered with
-    a Markdown widget instead (so they match the main view's colours/spacing),
-    which is why this only handles the diff case.
-    """
-    files = parse_diff(text)
-    if files:
-        return render_diff(files)
-    return render_hunk(parse_hunk_lines(text))

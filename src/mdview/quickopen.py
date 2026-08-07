@@ -20,38 +20,14 @@ T = TypeVar("T")
 
 
 @dataclass(frozen=True)
-class DiffSource:
-    """A git/gh diff the palette can open, mirroring the CLI's diff flags.
-
-    `source` is ``working``/``staged``/``pr`` (fed to ``diffsource.capture_diff``);
-    `ref` is an optional ref / PR number (None = working tree / current branch).
-    `label` is both the palette display text and the fuzzy-match target.
-    """
-
-    label: str
-    source: str
-    ref: str | None = None
-
-
-# The diff sources offered in the palette (shown only inside a git repo). These
-# mirror `mdview --diff` / `--staged` / `--pr` with no ref (working tree / current
-# branch); a missing `gh`/PR surfaces as a notice when selected, as on the CLI.
-DIFF_SOURCES: list[DiffSource] = [
-    DiffSource("git diff", "working", None),
-    DiffSource("git diff --staged", "staged", None),
-    DiffSource("gh pr diff", "pr", None),
-]
-
-
-@dataclass(frozen=True)
 class QuickOpenEntry:
-    """One pickable row: a display/match `label` and the `payload` to act on
-    (an absolute file `Path`, or a `DiffSource`)."""
+    """One pickable row: a display/match `label` and the absolute file `Path`
+    to open."""
 
     label: str
-    payload: object
+    payload: Path
 
-# Directories never worth walking into for a Markdown/diff viewer: VCS metadata,
+# Directories never worth walking into for a Markdown viewer: VCS metadata,
 # dependency/build trees, tool caches. Any dotted dir is also pruned (hidden).
 _IGNORED_DIRS = frozenset(
     {
@@ -151,30 +127,6 @@ def fuzzy_filter(
     return [(item, indices) for _, _, item, indices in scored]
 
 
-def is_git_repo(root: Path) -> bool:
-    """Whether *root* (or an ancestor) is a git working tree.
-
-    Walks up looking for a ``.git`` entry — a directory in a normal clone, or a
-    *file* in a worktree/submodule. Cheap and offline (no subprocess), so the
-    palette can decide whether to offer the diff sources without spawning git.
-    """
-    current = Path(root).resolve()
-    for directory in (current, *current.parents):
-        if (directory / ".git").exists():
-            return True
-    return False
-
-
-def build_entries(
-    root: Path,
-    files: list[Path],
-    *,
-    include_diffs: bool,
-) -> list[QuickOpenEntry]:
-    """The palette rows: the diff sources (when *include_diffs*) first, then each
-    file as an absolute-path payload under *root*."""
-    entries: list[QuickOpenEntry] = []
-    if include_diffs:
-        entries.extend(QuickOpenEntry(d.label, d) for d in DIFF_SOURCES)
-    entries.extend(QuickOpenEntry(rel.as_posix(), root / rel) for rel in files)
-    return entries
+def build_entries(root: Path, files: list[Path]) -> list[QuickOpenEntry]:
+    """The palette rows: each file as an absolute-path payload under *root*."""
+    return [QuickOpenEntry(rel.as_posix(), root / rel) for rel in files]

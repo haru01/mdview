@@ -44,10 +44,7 @@ from textual_image.widget import Image
 from mdview.ai import AiQueryError, ask_claude, find_claude
 from mdview.ask_ai import AskAiScreen
 from mdview.command import parse_command
-from mdview.diff import FileDiff, diff_to_markdown, looks_like_diff, parse_diff, parse_hunk_lines
 from mdview.diff_preview import DiffPreviewScreen
-from mdview.diff_widget import DiffHunk
-from mdview.diffview import render_hunk
 from mdview.edit_apply import replace_line_range, selection_block_range
 from mdview.edit_input import EditInstructionScreen
 from mdview.eventflow import parse_flow_dsl
@@ -56,8 +53,6 @@ from mdview.filetree import is_viewable
 from mdview.help import HelpScreen
 from mdview.image_zoom import ZoomableImage
 from mdview.mermaid import MermaidRenderError, find_mmdc, render_mermaid
-from mdview.commit_log import CommitLogScreen
-from mdview.gitlog import Commit
 from mdview.palette import (
     ACCENT,
     ACCENT_BRIGHT,
@@ -69,7 +64,7 @@ from mdview.palette import (
 )
 from mdview.project_grep import GrepResult, ProjectGrepScreen
 from mdview.quick_open import QuickOpenScreen
-from mdview.quickopen import DiffSource, build_entries, is_git_repo, list_viewable_files
+from mdview.quickopen import build_entries, list_viewable_files
 from mdview.search import compile_query
 from mdview.section_insight import SectionInsightScreen
 from mdview.selection import (
@@ -99,15 +94,6 @@ _INSIGHT_GLYPHS = {"idle": "💡", "done": "📦", "error": "⚠"}
 _INSIGHT_SPINNER = "◐◓◑◒"
 _INSIGHT_MAX_CONCURRENT = 3
 _INSIGHT_QUESTION = "このセクションの内容を、図解のSVGを交えてわかりやすく解説してください。"
-# When the document is a diff, each `## @ file` heading's section is that file's
-# unified diff, so the prose prompt doesn't fit — ask about the *change* instead.
-# Every diff explanation covers the same four points so they read consistently:
-# an SVG illustration, what changed, what it means, and review feedback.
-_DIFF_INSIGHT_QUESTION = (
-    "この差分（diff）を、図解のSVGを交えて解説してください。"
-    "何がどう変わったか、その変更が何を意味するか、"
-    "そしてレビュー観点でのフィードバック（気になる点・改善提案）も述べてください。"
-)
 # An SVG-illustrated section explanation can take longer than the Ask AI default,
 # so allow more time; `concise_svg` keeps the diagram simple to stay within it.
 _INSIGHT_TIMEOUT_S = 240.0
@@ -144,8 +130,7 @@ _MARKDOWN_EXTS = {".md", ".markdown", ".mdown", ".mkd"}
 
 # `/` search: colour applied to the matched substrings themselves (per-word, not
 # the whole block). The set gets a dim purple wash; the current match (where
-# n/N landed) a brighter, bold one. These strings parse for both Textual
-# `Content.highlight_regex` and Rich `Text.highlight_regex` (the DiffHunk path).
+# n/N landed) a brighter, bold one.
 _MATCH_HL = f"on {SEARCH_MATCH_BG}"
 _CURRENT_HL = f"bold on {SEARCH_CURRENT_BG}"
 
@@ -296,7 +281,7 @@ class _WikiHoverPopup(Static):
 
 
 class _MdTree(DirectoryTree):
-    """DirectoryTree filtered to viewable files (Markdown/diff) and dirs.
+    """DirectoryTree filtered to viewable (Markdown) files and dirs.
 
     Directories are always kept so the tree can be navigated; files are kept
     only when the viewer can render them (so the sidebar lists openable files,
@@ -384,10 +369,9 @@ class MdViewerApp(App):
         Binding("slash", "search", "Search", show=True),
         Binding("n", "next_match", "Next match", show=True),
         Binding("N", "prev_match", "Prev match", show=False),
-        # structural navigation. Space/Shift+Space are the ergonomic, context-
-        # aware pair (headings in prose, file headings + @@ hunks in a diff);
-        # the bracket keys are explicit and always available (and `[`/`{` are the
-        # reliable "previous" where a terminal can't send Shift+Space).
+        # structural navigation. Space/Shift+Space step through headings; the
+        # bracket keys are the explicit equivalents (and `[` is the reliable
+        # "previous" where a terminal can't send Shift+Space).
         Binding("space", "next_section", "Next section", show=False),
         Binding("shift+space", "prev_section", "Prev section", show=False),
         Binding("right_square_bracket", "next_heading", "Next heading", show=True),
@@ -397,8 +381,6 @@ class MdViewerApp(App):
         # keyboard protocol is active; `[` stays the reliable all-heading prev.)
         Binding("ctrl+right_square_bracket", "next_h2", "Next section (H2)", show=False),
         Binding("ctrl+left_square_bracket", "prev_h2", "Prev section (H2)", show=False),
-        Binding("right_curly_bracket", "next_hunk", "Next hunk", show=False),
-        Binding("left_curly_bracket", "prev_hunk", "Prev hunk", show=False),
         # Horizontal scroll for a wide event flow (the visible EventFlow widget).
         # Plain left is link-back and `<`/`>` are home/end, so use shift+arrows.
         Binding("shift+right", "flow_scroll_right", "Flow right", show=False),
@@ -417,8 +399,6 @@ class MdViewerApp(App):
         Binding("ctrl+o", "quick_open", "Open file", show=True),
         # project-wide grep finder (also `:grep`)
         Binding("ctrl+g", "project_grep", "Grep", show=True),
-        # git log commit browser (also `--log`/`:log`)
-        Binding("l", "git_log", "Git log", show=True),
         # help
         Binding("question_mark", "help", "Help", show=True),
     ]
@@ -429,24 +409,14 @@ class MdViewerApp(App):
         *,
         content: str | None = None,
         base_dir: Path | None = None,
-        diff_files: list[FileDiff] | None = None,
         root_dir: Path | None = None,
-        open_log: bool = False,
     ) -> None:
         super().__init__()
-        # `mdview --log`: open the commit browser on mount (over an empty viewer)
-        # instead of the quick-open palette. Selecting a commit shows its diff.
-        self._open_log = open_log
         # Directory the file-tree sidebar is rooted at. When given on launch
         # (`mdview <dir>`) the sidebar starts visible; otherwise it defaults to
         # the viewed file's parent and starts hidden (toggle with `e`).
         self._root_dir = root_dir.resolve() if root_dir is not None else None
         self._history: list[tuple[Path, float]] = []
-        # Parsed diff model when the document is a whole unified diff; used by
-        # `_inject_diff_hunks` to render each ```diff placeholder fence as a
-        # delta-styled `DiffHunk` (the model carries each hunk's file path so
-        # code can be syntax-highlighted in its language).
-        self._diff_files = diff_files
         # Semantic-selection ladder state (see mdview.selection). `_sel_scopes`
         # is the expansion ladder for the current anchor; `_sel_index` is the
         # active rung. All None/0 means no active semantic selection.
@@ -524,10 +494,6 @@ class MdViewerApp(App):
         # completes — a worker would hang `App.workers.wait_for_complete()`.
         # Re-pointed on navigation, cancelled on unmount, skipped for stdin.
         self._watch_task: asyncio.Task[None] | None = None
-        # A transient view has no backing file to watch or save to (a captured
-        # git/gh diff opened from the palette). Set true while one is shown,
-        # cleared on navigation to a real file in `_load_file`.
-        self._transient_view: bool = False
         if content is not None:
             # stdin has no source directory, so relative images/links resolve
             # against base_dir (defaults to CWD). Stash the text in the tempdir
@@ -584,43 +550,25 @@ class MdViewerApp(App):
         self.theme = "obsidian"
         self.title = self._display_name
         if self._md_path is None:
-            # No document yet (empty directory launch, or `--log`).
-            if self._open_log:
-                # `--log` opens the commit browser over an empty viewer; the
-                # sidebar stays closed (toggle with `e`, lazily mounted) — the
-                # commit picker is the first move, not the file tree.
-                self.action_git_log()
-            else:
-                # Empty directory: mount + focus the tree so `e` works and the
-                # user can pick a file (the palette would be empty here).
-                tree = await self._ensure_sidebar()
-                tree.focus()
-                self.notify("左のツリーからファイルを選択してください")
+            # No document yet (empty directory launch): mount + focus the tree so
+            # `e` works and the user can pick a file (the palette would be empty).
+            tree = await self._ensure_sidebar()
+            tree.focus()
+            self.notify("左のツリーからファイルを選択してください")
             return
         try:
             text = self._md_path.read_text(encoding="utf-8")
         except OSError as e:
             self.exit(message=f"mdview: failed to load {self._md_path}: {e}")
             return
-        # A pre-supplied diff model (the CLI diff path) means `text` is already
-        # the scaffolded Markdown — render as-is. Otherwise detect a diff from the
-        # raw text so `mdview x.diff` renders delta-style too.
-        if self._diff_files is not None:
-            self._frontmatter_raw = None
-            self._frontmatter_meta = {}
-            source = text
-        else:
-            source = self._prepare_source(text)
-        await self._render_source(source)
+        await self._render_source(self._prepare_source(text))
         self._disk_baseline = text
         self._start_watching()
         # A directory launch (`mdview <dir>`) renders the initial file (README)
         # and immediately opens the quick-open palette — preselected to that file
         # — so picking what to read is the first move. The tree stays hidden
         # (toggle with `e`); Esc closes the palette and leaves README on screen.
-        if self._open_log:
-            self.action_git_log()
-        elif self._root_dir is not None:
+        if self._root_dir is not None:
             self.action_quick_open()
 
     async def _inject_images(self) -> None:
@@ -655,36 +603,6 @@ class MdViewerApp(App):
             if image_widget is None:
                 continue
             await viewer.document.mount(image_widget, after=fence)
-            await fence.remove()
-
-    async def _inject_diff_hunks(self) -> None:
-        """Swap each ```diff fence for a delta-styled `DiffHunk` widget.
-
-        For a whole-document diff the parsed model (`self._diff_files`) supplies
-        each hunk and its file path (so code is highlighted in its language); the
-        fences and the flattened hunks line up one-for-one because
-        `diff_to_markdown` emits exactly one fence per hunk, in order. A ```diff
-        fence authored inside ordinary Markdown has no model, so its body is
-        parsed standalone and rendered without a known language.
-        """
-        viewer = self.query_one(MarkdownViewer)
-        if self._diff_files is not None:
-            # A file heading and its hunks read as one unit, so tag the headings
-            # for the CSS that drops their bottom margin (the @@ hunk header then
-            # sits directly under the file heading instead of after a blank row).
-            for header in viewer.document.query(MarkdownHeader):
-                header.add_class("diff-file")
-        fences = [
-            f for f in viewer.document.query(MarkdownFence) if (f.lexer or "").lower() == "diff"
-        ]
-        if not fences:
-            return
-        if self._diff_files is not None:
-            pairs = [(hunk, file.path) for file in self._diff_files for hunk in file.hunks]
-        else:
-            pairs = [(parse_hunk_lines(f.code), None) for f in fences]
-        for fence, (hunk, file_path) in zip(fences, pairs):
-            await viewer.document.mount(DiffHunk(hunk, file_path=file_path), after=fence)
             await fence.remove()
 
     async def _inject_event_flows(self) -> None:
@@ -892,10 +810,7 @@ class MdViewerApp(App):
         Clicking it asks `claude` to explain that section (with an SVG diagram)
         in the background; while running the 💡 spins, and on success it becomes
         a 📦 whose click opens the explanation. The whole feature is skipped when
-        `claude` is absent (degrade to nothing). It works for prose sections and,
-        for a diff, for each `## @ file` heading too — there the section *is* that
-        file's unified diff, so `_run_section_insight` asks about the change
-        (`_DIFF_INSIGHT_QUESTION`) rather than prose. The heading widget is left
+        `claude` is absent (degrade to nothing). The heading widget is left
         structurally untouched — only its rendered Content gains the marker — so
         navigation/TOC/selection keep working; a per-heading `get_selection`
         override keeps the marker out of copied/searched/AI'd text.
@@ -966,15 +881,10 @@ class MdViewerApp(App):
             # A per-heading dir so concurrent runs never mix up their diagrams.
             svg_out_dir = Path(self._tempdir.name) / "section-svg" / str(hid)
             self._reset_svg_dir(svg_out_dir)
-            question = (
-                _DIFF_INSIGHT_QUESTION
-                if self._diff_files is not None
-                else _INSIGHT_QUESTION
-            )
             try:
                 result = await ask_claude(
                     section,
-                    question,
+                    _INSIGHT_QUESTION,
                     document,
                     claude=self._insight_claude,
                     cwd=self._md_dir,
@@ -1062,8 +972,8 @@ class MdViewerApp(App):
         """Edit the current selection with AI (`w`). Block-unit selections only.
 
         Only a whole-block (semantic-ladder / `v` / click) selection maps cleanly
-        back to source lines; a freeform partial drag, or a selected diff hunk /
-        event flow (no `source_range`), is refused with a notice. Only the selected
+        back to source lines; a freeform partial drag, or a selected event flow
+        (no `source_range`), is refused with a notice. Only the selected
         text is sent to the LLM and only it is the change target. A whole section
         is editable by expanding the selection (`v`) up to the section scope first.
         """
@@ -1156,8 +1066,8 @@ class MdViewerApp(App):
     def _start_watching(self) -> None:
         """(Re)start the resident task watching the viewed file for external
         edits. Called on load and on every navigation so it tracks the *current*
-        `_md_path`; the old task is cancelled first. An ephemeral view (stdin /
-        captured diff) has no real file, so it is not watched."""
+        `_md_path`; the old task is cancelled first. An ephemeral view (stdin)
+        has no real file, so it is not watched."""
         if self._watch_task is not None:
             self._watch_task.cancel()
             self._watch_task = None
@@ -1335,7 +1245,6 @@ class MdViewerApp(App):
         self._reset_insights()
         await self._inject_images()
         await self._inject_mermaid()
-        await self._inject_diff_hunks()
         await self._inject_event_flows()
         await self._inject_wikilinks()
         await self._inject_frontmatter()
@@ -1345,19 +1254,19 @@ class MdViewerApp(App):
         """Drop widgets the injection passes mounted into the document.
 
         `document.update` only removes `MarkdownBlock` children, so the widgets we
-        swap in for fences/paragraphs (`DiffHunk`, `EventFlow`, and image widgets)
-        would orphan and stay visible across a re-render — e.g. a diff's hunks
-        lingering on top of a freshly navigated Markdown file. Removing
-        `ZoomableImage` first detaches its inner `Image`, so the later `Image`
-        sweep only sees standalone (Mermaid) images.
+        swap in for fences/paragraphs (`EventFlow` and the image widgets) would
+        orphan and stay visible across a re-render — e.g. an event flow lingering
+        on top of a freshly navigated Markdown file. Removing `ZoomableImage`
+        first detaches its inner `Image`, so the later `Image` sweep only sees
+        standalone (Mermaid) images.
         """
         doc = self.query_one(MarkdownViewer).document
-        for widget_type in (_FrontmatterPanel, DiffHunk, EventFlow, ZoomableImage, Image):
+        for widget_type in (_FrontmatterPanel, EventFlow, ZoomableImage, Image):
             for widget in list(doc.query(widget_type)):
                 await widget.remove()
 
     def _prepare_source(self, text: str) -> str:
-        """Peel frontmatter off raw file *text*, then hand the body to `_source_for`.
+        """Peel frontmatter off raw file *text* and return the body to render.
 
         Stores the frontmatter prefix/mapping so the panel can render it and `:w`
         can reconstruct the file. Keeping the render source == body (not the raw
@@ -1367,27 +1276,13 @@ class MdViewerApp(App):
         split = split_frontmatter(text)
         self._frontmatter_raw = split.raw_prefix
         self._frontmatter_meta = split.meta
-        return self._source_for(split.body)
+        return split.body
 
     def _current_full_source(self) -> str:
         """The full document as it would be written to disk: the (untouched)
         frontmatter prefix + the live body (`document.source`)."""
         body = self.query_one(MarkdownViewer).document.source
         return (self._frontmatter_raw or "") + body
-
-    def _source_for(self, text: str) -> str:
-        """Return the source to render for raw file *text*, updating `_diff_files`.
-
-        A unified diff is scaffolded to delta-style Markdown (and the parsed
-        model stashed on `_diff_files` for `_inject_diff_hunks`); anything else
-        renders as plain Markdown. Shared by initial load, navigation, and the
-        external-edit reload so all three stay diff-aware and consistent.
-        """
-        if looks_like_diff(text):
-            self._diff_files = parse_diff(text)
-            return diff_to_markdown(self._diff_files)
-        self._diff_files = None
-        return text
 
     async def _load_file(self, path: Path, anchor: str = "") -> bool:
         viewer = self.query_one(MarkdownViewer)
@@ -1399,7 +1294,6 @@ class MdViewerApp(App):
         self._md_path = path
         self._md_dir = path.parent
         self.title = path.name
-        self._transient_view = False  # a real file again (clears a diff view)
         # New document: drop the hover popup and its preview cache.
         self._hide_wiki_hover()
         self._wiki_preview_cache = {}
@@ -1551,8 +1445,8 @@ class MdViewerApp(App):
 
     def action_open_toc(self) -> None:
         # The TOC opens as a wide centered modal (TocScreen) rather than the
-        # docked sidebar, which truncated long headings (e.g. a diff's file
-        # paths). The viewer keeps a hidden MarkdownTableOfContents purely as the
+        # docked sidebar, which truncated long headings. The viewer keeps a
+        # hidden MarkdownTableOfContents purely as the
         # data source that Textual populates on load; we hand its data to the
         # modal.
         viewer = self.query_one(MarkdownViewer)
@@ -1563,25 +1457,21 @@ class MdViewerApp(App):
 
     def action_quick_open(self) -> None:
         # Fuzzy-find a viewable file under the sidebar root (or the current
-        # document's dir) — plus the git/gh diff sources when in a repo — and open
-        # the pick via the normal history-tracking nav / a captured-diff view.
+        # document's dir) and open the pick via the normal history-tracking nav.
         self.query_one("#cmdline-bar").display = False
         root = self._root_dir or self._md_dir
         files = list_viewable_files(root)
-        entries = build_entries(root, files, include_diffs=is_git_repo(root))
+        entries = build_entries(root, files)
         self.push_screen(
             QuickOpenScreen(entries, current=self._md_path),
             self._on_quick_open_picked,
         )
 
     def _on_quick_open_picked(self, payload: object) -> None:
-        # Esc/empty pick → None. A DiffSource captures and renders git/gh output;
-        # a Path navigates (reopening the current file is a no-op).
+        # Esc/empty pick → None; otherwise navigate to the picked path (reopening
+        # the current file is a no-op).
         self.set_focus(None)
         if payload is None:
-            return
-        if isinstance(payload, DiffSource):
-            self._open_diff_source(payload)
             return
         path = payload
         if path == self._md_path:
@@ -1621,120 +1511,6 @@ class MdViewerApp(App):
         self._run_search()
         self.set_focus(None)
 
-    @work(exclusive=True)
-    async def action_git_log(self) -> None:
-        """Open the commit browser (`--log` / `:log`): list recent commits, and
-        on pick render that commit's `git show` diff in the transient view.
-
-        The capture runs off the UI thread (blocking subprocess); a missing git /
-        non-repo surfaces as a notice (mirroring the diff-source errors). git runs
-        in the process CWD, as the `--diff`/`--pr` sources do.
-        """
-        from mdview.diffsource import DiffSourceError
-        from mdview.gitlog import DEFAULT_LOG_LIMIT, capture_log
-
-        self.notify("git log を取得中…")
-        try:
-            commits = await asyncio.to_thread(capture_log, DEFAULT_LOG_LIMIT)
-        except DiffSourceError as e:
-            self.notify(str(e), severity="error")
-            return
-        if not commits:
-            self.notify("コミットがありません")
-            return
-        self.push_screen(CommitLogScreen(commits), self._on_commit_picked)
-
-    def _on_commit_picked(self, commit: object) -> None:
-        # Esc/empty pick → None. Otherwise show that commit's diff.
-        self.set_focus(None)
-        if commit is None:
-            return
-        self._open_commit_diff(commit)
-
-    @work(exclusive=True)
-    async def _open_commit_diff(self, commit: Commit) -> None:
-        """Render the selected commit's `git show` as a transient view.
-
-        `git show` prefixes the diff with commit metadata, so the whole text isn't
-        diff-detectable; `split_show` peels that off. The metadata becomes a
-        Markdown header (`commit_markdown_header`) above the diff, and the diff
-        portion flows through the normal scaffold — so it's delta-coloured and its
-        per-file `## @` headings get the 💡 AI-insight button, exactly like any
-        other diff view.
-        """
-        from mdview.diffsource import DiffSourceError
-        from mdview.gitlog import capture_show, commit_markdown_header, split_show
-
-        self.notify(f"{commit.short} を取得中…")
-        try:
-            text = await asyncio.to_thread(capture_show, commit.hash)
-        except DiffSourceError as e:
-            self.notify(str(e), severity="error")
-            return
-        if not text.strip():
-            self.notify("差分はありません")
-            return
-        message, diff_text = split_show(text)
-        header = commit_markdown_header(commit, message)
-        label = f"{commit.short} {commit.subject}"
-        if diff_text.strip():
-            await self._show_captured_diff(label, diff_text, prelude=header)
-        else:
-            # An empty/merge commit with no file changes: show just the message.
-            await self._show_captured_diff(label, header)
-
-    @work(exclusive=True)
-    async def _open_diff_source(self, source: DiffSource) -> None:
-        """Run the git/gh diff for *source* and render it as a transient view.
-
-        The capture is a blocking subprocess, so it runs off the UI thread; a
-        missing binary / non-repo / empty diff surfaces as a notice (mirroring the
-        CLI's `--diff`/`--pr` errors) rather than replacing the view.
-        """
-        from mdview.diffsource import DiffSourceError, capture_diff
-
-        self.notify(f"{source.label} を取得中…")
-        try:
-            text = await asyncio.to_thread(capture_diff, source.source, source.ref)
-        except DiffSourceError as e:
-            self.notify(str(e), severity="error")
-            return
-        if not text.strip():
-            self.notify("変更はありません")
-            return
-        await self._show_captured_diff(source.label, text)
-
-    async def _show_captured_diff(self, label: str, text: str, *, prelude: str = "") -> None:
-        """Render captured diff *text* as a transient, no-backing-file view.
-
-        Like the stdin path, the raw text is stashed in the tempdir so the rest of
-        the pipeline has a real `_md_path`; `_transient_view` then suppresses file
-        watching and `:w` (there's nothing to save back to). The previous document
-        is pushed onto the history stack so `Backspace` returns to it. *prelude*
-        (optional Markdown, e.g. a commit header) is prepended to the scaffolded
-        source so it renders above the delta diff.
-        """
-        viewer = self.query_one(MarkdownViewer)
-        if self._md_path is not None:
-            self._history.append((self._md_path, viewer.scroll_y))
-        diff_file = Path(self._tempdir.name) / "captured.diff"
-        diff_file.write_text(text, encoding="utf-8")
-        self._md_path = diff_file
-        self._transient_view = True
-        self._display_name = label
-        self.title = label
-        # A captured diff has no frontmatter; clear any carried over from the
-        # previous document so `:w`/dirty reconstruction stays consistent.
-        self._frontmatter_raw = None
-        self._frontmatter_meta = {}
-        await self._render_source(prelude + self._source_for(text))
-        # No file to diff against: the buffer is never dirty, so `q` quits clean.
-        self._disk_baseline = viewer.document.source
-        self._undo_stack.clear()
-        self._editing = False
-        self._start_watching()  # the transient guard turns it into a no-op
-        viewer.scroll_home(animate=False)
-
     def action_next_match(self) -> None:
         # `n` steps search matches; no-op when no search is active.
         if self._search_hits:
@@ -1756,31 +1532,17 @@ class MdViewerApp(App):
     def action_prev_h2(self) -> None:
         self._jump_to(self._headings_at_level(2), direction=-1)
 
-    def action_next_hunk(self) -> None:
-        self._jump_to(list(self.query_one(MarkdownViewer).document.query(DiffHunk)), direction=1)
-
-    def action_prev_hunk(self) -> None:
-        self._jump_to(list(self.query_one(MarkdownViewer).document.query(DiffHunk)), direction=-1)
-
     def action_next_section(self) -> None:
-        self._jump_to(self._section_targets(), direction=1)
+        self._jump_to(self._all_headings(), direction=1)
 
     def action_prev_section(self) -> None:
-        self._jump_to(self._section_targets(), direction=-1)
-
-    def _section_targets(self) -> list[Widget]:
-        """Space/Shift+Space targets: headings, plus every `@@` hunk so a diff
-        steps file boundary → hunk → hunk in document order. In prose with no
-        diff there are no DiffHunks, so this is just the headings."""
-        viewer = self.query_one(MarkdownViewer)
-        return self._all_headings() + list(viewer.document.query(DiffHunk))
+        self._jump_to(self._all_headings(), direction=-1)
 
     def _all_headings(self) -> list[Widget]:
         return list(self.query_one(MarkdownViewer).document.query(MarkdownHeader))
 
     def _headings_at_level(self, level: int) -> list[Widget]:
-        # Textual mounts MarkdownH1..H6, each carrying a `LEVEL` class attr; a
-        # diff's `## @ file` headings are H2, so Opt+]/[ walk files there.
+        # Textual mounts MarkdownH1..H6, each carrying a `LEVEL` class attr.
         return [h for h in self._all_headings() if getattr(h, "LEVEL", None) == level]
 
     def _jump_to(self, targets: list[Widget], *, direction: int) -> None:
@@ -1878,8 +1640,6 @@ class MdViewerApp(App):
             self.action_quick_open()
         elif command == "grep":
             self.action_project_grep()
-        elif command == "log":
-            self.action_git_log()
         elif raw.strip():
             self.notify(f"未知のコマンド: :{raw.strip()}", severity="warning")
 
@@ -1892,9 +1652,9 @@ class MdViewerApp(App):
         return self._current_full_source() != self._disk_baseline
 
     def _is_ephemeral(self) -> bool:
-        """Whether the current view has no real file behind it — stdin or a
-        captured-diff transient view — so it can't be watched or written back."""
-        return self._display_name == "(stdin)" or self._transient_view
+        """Whether the current view has no real file behind it (stdin), so it
+        can't be watched or written back."""
+        return self._display_name == "(stdin)"
 
     def action_quit(self) -> None:
         """Quit, but guard against discarding unsaved AI edits (`:q!` forces it)."""
@@ -1908,8 +1668,8 @@ class MdViewerApp(App):
     def _write_file(self) -> bool:
         """Write the live buffer to disk (`:w`). Returns True on success.
 
-        A stdin document or a captured-diff view has no real target file, so it is
-        refused. On an OS error the buffer stays dirty (so the quit guard still
+        A stdin document has no real target file, so it is refused.
+        On an OS error the buffer stays dirty (so the quit guard still
         fires and the user isn't misled into thinking it saved).
         """
         if self._is_ephemeral():
@@ -2040,7 +1800,7 @@ class MdViewerApp(App):
         widget.add_class("search-current")  # marker (no CSS); the wash is per-word
         self._paint_widget(widget, pattern, current_span=(start, end))
         # Scroll to the matched line within the block (not just the block top), so
-        # stepping through hits inside a tall block (a long fence/diff) still moves
+        # stepping through hits inside a tall block (a long fence) still moves
         # the view. Keep a couple of rows of lead-in for context.
         target_y = max(0, widget.virtual_region.y + line - 2)
         viewer.scroll_to(y=target_y, animate=False)
@@ -2052,13 +1812,7 @@ class MdViewerApp(App):
         self, widget: Widget, pattern: regex.Pattern[str], *, current_span: tuple[int, int] | None
     ) -> None:
         """Wash every match in *widget* subtly; brighten *current_span* if given."""
-        if isinstance(widget, DiffHunk):
-            text = render_hunk(widget._hunk, file_path=widget._file_path)
-            text.highlight_regex(pattern, _MATCH_HL)
-            if current_span is not None:
-                text.stylize(_CURRENT_HL, *current_span)
-            widget.update(text)
-        elif isinstance(widget, MarkdownFence):
+        if isinstance(widget, MarkdownFence):
             content = widget._highlighted_code.highlight_regex(pattern, style=_MATCH_HL)
             if current_span is not None:
                 content = content.stylize(_CURRENT_HL, *current_span)
@@ -2075,9 +1829,7 @@ class MdViewerApp(App):
 
     def _restore_block(self, widget: Widget) -> None:
         """Undo `_paint_widget`, returning *widget* to its unsearched render."""
-        if isinstance(widget, DiffHunk):
-            widget.update(render_hunk(widget._hunk, file_path=widget._file_path))
-        elif isinstance(widget, MarkdownFence):
+        if isinstance(widget, MarkdownFence):
             with suppress(NoMatches):
                 widget.query_one("#code-content", Label).update(widget._highlighted_code)
         elif isinstance(widget, MarkdownBlock):
@@ -2213,18 +1965,14 @@ def _search_text(widget: Widget) -> str:
 
     The offsets `pattern.finditer` returns here are used to colour the matched
     substrings, so this must be the very text those colours land on: a code
-    fence's syntax-highlighted plain (== its raw code), a `DiffHunk`'s *rendered*
-    text (gutter included — `@@` headers and code still match, and offsets line
-    up with what's drawn), and every other Markdown block's rendered `Content`
-    (heading text without the leading `##`, etc.).
+    fence's syntax-highlighted plain (== its raw code), and every other Markdown
+    block's rendered `Content` (heading text without the leading `##`, etc.).
 
     Known limitation: a `MarkdownTable`'s own `_content` is empty (its cell text
     lives in child `MarkdownTableContent` widgets), so table cell text is not
     searchable. Highlighting it would mean re-rendering the table's cells, which
     isn't worth the complexity here.
     """
-    if isinstance(widget, DiffHunk):
-        return render_hunk(widget._hunk, file_path=widget._file_path).plain
     if isinstance(widget, MarkdownFence):
         return widget._highlighted_code.plain
     if isinstance(widget, MarkdownBlock):

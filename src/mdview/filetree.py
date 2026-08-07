@@ -6,8 +6,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-# Extensions the viewer can render: Markdown and unified diffs.
-VIEWABLE_SUFFIXES = frozenset({".md", ".markdown", ".diff", ".patch"})
+# Extensions the viewer can render.
+VIEWABLE_SUFFIXES = frozenset({".md", ".markdown"})
 
 
 def is_viewable(path: Path) -> bool:

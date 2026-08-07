@@ -30,7 +30,6 @@ from textual.widgets._markdown import (
     MarkdownTable,
 )
 
-from mdview.diff_widget import DiffHunk
 from mdview.eventflow_widget import EventFlow
 
 # Smallest selectable "blocks" — widgets that render their own text.
@@ -40,7 +39,6 @@ ATOMIC_BLOCKS: tuple[type[Widget], ...] = (
     MarkdownFence,
     MarkdownHorizontalRule,
     MarkdownTable,
-    DiffHunk,  # delta-styled diff hunk (replaces a ```diff fence in the tree)
     EventFlow,  # event-flow swimlanes (replaces an ```event-flow-svg fence)
 )
 
@@ -175,7 +173,7 @@ def section_source(heading: MarkdownHeader, document: Markdown) -> str:
     higher level (so an H2 absorbs its H3–H6 subsections), or to the end of the
     document. Reads the *original* ``Markdown.source`` sliced by the blocks'
     ``source_range`` — clean Markdown, not the rendered widget text — so it stays
-    correct even after images/diffs have been swapped into the tree (headings are
+    correct even after images/flows have been swapped into the tree (headings are
     never replaced, so their ``source_range`` is intact). Returns "" if
     ``heading`` is not a top-level document child.
     """

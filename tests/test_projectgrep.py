@@ -53,12 +53,6 @@ def test_grep_skips_non_viewable_files(tmp_path: Path) -> None:
     assert {h.rel for h in hits} == {"a.md"}
 
 
-def test_grep_searches_diff_files(tmp_path: Path) -> None:
-    _write(tmp_path, "change.diff", "@@ -1 +1 @@\n-old\n+new TARGET line\n")
-    hits, _ = grep_files(tmp_path, "TARGET")
-    assert any(h.rel == "change.diff" for h in hits)
-
-
 def test_grep_truncates_at_max_hits(tmp_path: Path) -> None:
     _write(tmp_path, "a.md", "\n".join("match" for _ in range(50)) + "\n")
     hits, truncated = grep_files(tmp_path, "match", max_hits=10)

@@ -2,7 +2,7 @@
 
 Single source of truth for the hex values used by the *runtime-built* `Content`
 styles — search highlighting, `[[wikilinks]]`, the frontmatter panel, the fuzzy
-pickers, the diff renderer, the event-flow title. The *declarative* side
+pickers, the AI edit-preview diff, the event-flow title. The *declarative* side
 (backgrounds, headings, emphasis, borders) lives in ``theme.css``; keep the two
 in sync — the values here mirror the ``$accent`` / ``$rule`` / ``$text`` /
 ``$text-muted`` used there.
@@ -37,8 +37,8 @@ BROKEN_LINK = "#6e6e6e"
 SEARCH_MATCH_BG = "#302b52"
 SEARCH_CURRENT_BG = "#4c3fa8"
 
-# Diff line backgrounds stay semantically green/red (unchanged); only the
-# per-file heading rule follows the accent instead of the old cyan.
+# AI edit-preview diff: line backgrounds stay semantically green/red; the `@@`
+# hunk header follows the accent instead of the old cyan.
 DIFF_ADD_BG = "#16331f"
 DIFF_DEL_BG = "#3a1d1d"
 DIFF_FILE_RULE = ACCENT

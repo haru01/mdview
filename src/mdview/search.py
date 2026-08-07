@@ -5,12 +5,9 @@ block widgets and keeps the ones whose plain text the returned pattern matches.
 Keeping the compilation here — out of the Textual layer — lets it be unit-tested
 directly and reused without a running app.
 
-Queries are treated as regular expressions (case-insensitive). This is what
-makes the diff search hooks work: a `@ `-prefixed file heading and a `@@ …`
-hunk header live in the same searchable text, so `^@ ` selects files only,
-`@@` selects hunks only, and `@\\s` (unanchored) selects both. A query that
-isn't a valid regex (e.g. a stray `(`) falls back to a literal match so typing
-never raises.
+Queries are treated as regular expressions (case-insensitive), so anchors and
+character classes work as typed. A query that isn't a valid regex (e.g. a stray
+`(`) falls back to a literal match so typing never raises.
 
 We compile with the `regex` module (a superset of stdlib `re`) so the caller can
 pass a per-call `timeout=` to `finditer`: a catastrophic-backtracking pattern

@@ -1,19 +1,10 @@
-"""Parse a raw unified diff into a structured model, and scaffold it as Markdown.
+"""Parse a raw unified diff into a small, framework-free model.
 
-`gh pr diff` / `git diff` emit a raw unified diff that, viewed as Markdown, is
-unreadable. This module first parses such input into a small, framework-free
-model (`parse_diff` → `list[FileDiff]`). Two consumers render that model:
-
-- the TUI swaps each ```diff fence emitted by `diff_to_markdown` for a
-  delta-styled `DiffHunk` widget (see `mdview.diff_widget` / `mdview.diffview`);
-- the non-TTY path renders the model directly with Rich.
-
-`diff_to_markdown` keeps each file as a `## @ ` heading (so the TOC lists changed
-files and `]`/`[` jump between them; the `@ ` prefix is the `/` search hook —
-see `mdview.app`) but, unlike before, does **not** turn `@@` hunk headers into
-`###` headings — the hunk body simply lives in a ```diff fence that the TUI
-replaces. The transform is purely deterministic: same input always yields the
-same output.
+The sole consumer is the AI edit preview: `textdiff.build_unified_diff` turns
+the original and edited text into a unified diff, `parse_diff` parses it back
+into `list[FileDiff]`, and `mdview.diffview.render_hunk` draws each hunk in the
+delta style inside `mdview.diff_preview.DiffPreviewScreen`. The parse is purely
+deterministic: same input always yields the same output.
 """
 
 from __future__ import annotations
@@ -27,14 +18,6 @@ _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@")
 _HUNK_START_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 # `diff --git a/<path> b/<path>` — greedy, good enough for paths without spaces.
 _GIT_RE = re.compile(r"^diff --git a/(.+) b/(.+)$")
-# Markdown inline characters that must be escaped inside heading text.
-_MD_SPECIAL_RE = re.compile(r"([\\`*_\[\]<])")
-
-_STATUS_SUFFIX = {
-    "new file": " (new file)",
-    "deleted": " (deleted)",
-    "renamed": " (renamed)",
-}
 
 
 @dataclass(frozen=True)
@@ -68,15 +51,6 @@ class FileDiff:
     hunks: list[Hunk] = field(default_factory=list)
 
 
-def _escape_md(text: str) -> str:
-    """Backslash-escape characters that would trigger Markdown inline markup.
-
-    Covers emphasis (`*` `_`), code (`` ` ``), links (`[` `]`) and raw HTML /
-    autolinks (`<`) — e.g. keeps `__init__.py` from rendering "init" in bold.
-    """
-    return _MD_SPECIAL_RE.sub(r"\\\1", text)
-
-
 def _lines(text: str) -> list[str]:
     """Split *text* on newlines only.
 
@@ -97,31 +71,6 @@ def _strip_ab(path: str) -> str:
     if path.startswith(("a/", "b/")):
         path = path[2:]
     return path
-
-
-def _max_backtick_run(text: str) -> int:
-    return max((len(run) for run in re.findall(r"`+", text)), default=0)
-
-
-def looks_like_diff(text: str) -> bool:
-    """Heuristically decide whether *the whole input* is a unified diff.
-
-    Front-anchored: the *first* non-empty line must itself start a diff. This
-    avoids misclassifying ordinary Markdown that merely embeds a diff example
-    (e.g. inside a ```diff fence) — such a document begins with prose/headings,
-    not with `diff --git` or `--- `.
-    """
-    lines = _lines(text)
-    first = next((line for line in lines if line.strip()), "")
-    if first.startswith("diff --git "):
-        return True
-    # Plain unified diff (`diff -u`, a .patch): starts with `--- `, then `+++ `,
-    # with at least one hunk header somewhere below.
-    if first.startswith("--- "):
-        has_plus = any(line.startswith("+++ ") for line in lines)
-        has_hunk = any(_HUNK_RE.match(line) for line in lines)
-        return has_plus and has_hunk
-    return False
 
 
 def _build_hunk(header: str, body: list[str]) -> Hunk:
@@ -240,36 +189,3 @@ def parse_diff(text: str) -> list[FileDiff]:
     return files
 
 
-def parse_hunk_lines(code: str) -> Hunk:
-    """Parse a standalone fence body (e.g. a ```diff block authored in Markdown).
-
-    The body may or may not start with an `@@` header; everything else is a
-    normal unified-diff body. Used for diff fences that are *not* part of a
-    whole-document diff (so there is no `FileDiff` model to draw from).
-    """
-    lines = _lines(code)
-    if lines and _HUNK_RE.match(lines[0]):
-        return _build_hunk(lines[0], lines[1:])
-    return _build_hunk("", lines)
-
-
-def diff_to_markdown(files: list[FileDiff]) -> str:
-    """Scaffold parsed *files* as Markdown the TUI can post-process.
-
-    Each file becomes a `##` heading; each hunk becomes a single ```diff fence
-    holding its raw text. The fence is a placeholder the TUI swaps for a
-    delta-styled widget — and a readable fallback if it does not.
-
-    The file heading is prefixed with `@ ` so the `/` search has a stable hook:
-    its rendered text starts with `@ ` while a hunk header starts with `@@ `,
-    so `^@ ` jumps between files and `@@` between hunks (see mdview.search).
-    """
-    blocks: list[str] = []
-    for file in files:
-        blocks.append(f"## @ {_escape_md(file.path)}{_STATUS_SUFFIX.get(file.status, '')}")
-        if file.binary_note:
-            blocks.append(_escape_md(file.binary_note))
-        for hunk in file.hunks:
-            fence = "`" * max(3, _max_backtick_run(hunk.raw) + 1)
-            blocks.append(f"{fence}diff\n{hunk.raw}\n{fence}" if hunk.raw else f"{fence}diff\n{fence}")
-    return "\n\n".join(blocks) + "\n"

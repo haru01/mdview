@@ -2,8 +2,7 @@
 
 Pure and framework-free (no Textual): the model and parser here are unit-tested
 directly, and the rendering lives in ``mdview.eventflowview`` / the Textual
-wrapper in ``mdview.eventflow_widget`` — the same split as ``diff``/``diffview``/
-``diff_widget``.
+wrapper in ``mdview.eventflow_widget`` — the project's usual pure/wrapper split.
 
 The DSL is the one authored inside EventStorming Markdown documents (the
 ``pocket-modeling`` toolkit). A fence body looks like::

@@ -1,10 +1,9 @@
 """The quick-open fuzzy finder modal (``Ctrl+P`` / ``:e``).
 
 A thin Textual wrapper over ``quickopen.py``: an input box whose every keystroke
-re-ranks the entries (viewable files, plus git/gh diff sources in a repo) with an
-fzf-style subsequence match into an ``OptionList``, and Enter dismisses with the
-chosen entry's payload (an absolute file path or a ``DiffSource``). The app routes
-that to navigation or a captured-diff view. Mirrors ``toc.py``'s pattern — a plain
+re-ranks the viewable files with an fzf-style subsequence match into an
+``OptionList``, and Enter dismisses with the chosen entry's payload (an absolute
+file path) for the app to navigate to. Mirrors ``toc.py``'s pattern — a plain
 ``ModalScreen`` that delegates list movement to the widget so the keys work while
 the input keeps focus.
 """

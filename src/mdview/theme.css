@@ -57,13 +57,6 @@ MarkdownH2 {
     border-bottom: solid $rule;
 }
 
-/* In a whole-diff document, a file heading and its hunks are one unit: drop the
- * heading's bottom margin so the first `@@` hunk header hugs the file banner
- * (set by app._inject_diff_hunks). */
-MarkdownH2.diff-file {
-    margin: 1 0 0 0;
-}
-
 MarkdownH3 {
     color: $text;
     text-style: bold;
@@ -209,7 +202,7 @@ MarkdownTableOfContents {
 
 /* ===== TOC popup modal =====
  * `t` opens the table of contents as a wide centered modal instead of a docked
- * sidebar, so long headings (e.g. a piped diff's file paths) stay readable.
+ * sidebar, so long headings stay readable.
  */
 
 TocScreen {
@@ -296,33 +289,6 @@ ProjectGrepScreen {
     height: 1;
     color: $text-muted;
     margin: 1 0 0 0;
-}
-
-/* ===== Commit-log browser (--log / :log) ===== */
-
-CommitLogScreen {
-    align: center middle;
-    background: $surface 60%;
-}
-
-#commit-log-dialog {
-    width: 90%;
-    height: 80%;
-    background: $panel;
-    border: round $accent;
-    padding: 1 2;
-}
-
-#commit-log-input {
-    border: none;
-    background: $boost;
-    margin: 0 0 1 0;
-}
-
-#commit-log-list {
-    width: 1fr;
-    height: 1fr;
-    background: $panel;
 }
 
 /* Wikilink hover preview: a floating peek shown while the mouse rests on a

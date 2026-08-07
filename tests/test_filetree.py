@@ -3,11 +3,15 @@ from pathlib import Path
 from mdview.filetree import VIEWABLE_SUFFIXES, initial_file, is_viewable
 
 
-def test_is_viewable_accepts_markdown_and_diff():
+def test_is_viewable_accepts_markdown():
     assert is_viewable(Path("a.md"))
     assert is_viewable(Path("a.markdown"))
-    assert is_viewable(Path("a.diff"))
-    assert is_viewable(Path("a.patch"))
+
+
+def test_is_viewable_rejects_diffs():
+    # Unified diffs are not a document type the viewer renders.
+    assert not is_viewable(Path("a.diff"))
+    assert not is_viewable(Path("a.patch"))
 
 
 def test_is_viewable_is_case_insensitive():

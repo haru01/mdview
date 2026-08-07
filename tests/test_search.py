@@ -22,26 +22,17 @@ def test_invalid_regex_falls_back_to_literal() -> None:
     assert not pattern.search("plain text")
 
 
-def test_at_space_matches_both_file_and_hunk() -> None:
-    # `@\s` (unanchored) hits the file heading's `@ ` and the second `@` of a
-    # `@@ ` hunk header — the documented "both" behaviour.
-    pattern = compile_query(r"@\s")
+def test_character_class_is_honoured() -> None:
+    # A valid regex is compiled as one, so `\s` and friends work as typed.
+    pattern = compile_query(r"TODO:\s")
     assert pattern is not None
-    assert pattern.search("@ src/app.py")
-    assert pattern.search("@@ -1,4 +1,4 @@ def main():")
+    assert pattern.search("TODO: write the docs")
+    assert not pattern.search("TODO:write the docs")
 
 
-def test_double_at_matches_only_hunk() -> None:
-    pattern = compile_query("@@")
+def test_anchor_matches_only_at_block_start() -> None:
+    # `^` anchors at the start of the block text a search runs against.
+    pattern = compile_query("^Note")
     assert pattern is not None
-    assert pattern.search("@@ -1,4 +1,4 @@")
-    assert not pattern.search("@ src/app.py")
-
-
-def test_anchored_at_matches_only_file_heading() -> None:
-    # `^@ ` anchors at the start of the block text: the file heading starts with
-    # `@ `, the hunk header starts with `@@`, so only the file heading matches.
-    pattern = compile_query("^@ ")
-    assert pattern is not None
-    assert pattern.search("@ src/app.py")
-    assert not pattern.search("@@ -1,4 +1,4 @@")
+    assert pattern.search("Note: read this first")
+    assert not pattern.search("See the Note above")
