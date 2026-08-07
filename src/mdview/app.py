@@ -369,13 +369,13 @@ class MdViewerApp(App):
         Binding("slash", "search", "Search", show=True),
         Binding("n", "next_match", "Next match", show=True),
         Binding("N", "prev_match", "Prev match", show=False),
-        # structural navigation. Space/Shift+Space step through headings; the
-        # bracket keys are the explicit equivalents (and `[` is the reliable
-        # "previous" where a terminal can't send Shift+Space).
-        Binding("space", "next_section", "Next section", show=False),
-        Binding("shift+space", "prev_section", "Prev section", show=False),
-        Binding("right_square_bracket", "next_heading", "Next heading", show=True),
-        Binding("left_square_bracket", "prev_heading", "Prev heading", show=False),
+        # structural navigation. Space/Shift+Space and the bracket keys are two
+        # spellings of the same heading walk (`[` is the reliable "previous"
+        # where a terminal can't distinguish Shift+Space from Space).
+        Binding("space,right_square_bracket", "next_heading", "Next heading", show=True),
+        Binding(
+            "shift+space,left_square_bracket", "prev_heading", "Prev heading", show=False
+        ),
         # Ctrl+]/Ctrl+[ narrow to level-2 (`##`) section headings. (Ctrl+[ is the
         # ESC byte in legacy terminals, so "prev H2" only works where the kitty
         # keyboard protocol is active; `[` stays the reliable all-heading prev.)
@@ -1239,7 +1239,7 @@ class MdViewerApp(App):
         regenerated heading ids would otherwise dangle.
         """
         viewer = self.query_one(MarkdownViewer)
-        await self._remove_injected_widgets()
+        await self._remove_injected_widgets(viewer.document)
         await viewer.document.update(text)
         self._end_search()
         self._reset_insights()
@@ -1250,8 +1250,8 @@ class MdViewerApp(App):
         await self._inject_frontmatter()
         await self._inject_section_insights()
 
-    async def _remove_injected_widgets(self) -> None:
-        """Drop widgets the injection passes mounted into the document.
+    async def _remove_injected_widgets(self, doc: Markdown) -> None:
+        """Drop widgets the injection passes mounted into *doc*.
 
         `document.update` only removes `MarkdownBlock` children, so the widgets we
         swap in for fences/paragraphs (`EventFlow` and the image widgets) would
@@ -1260,7 +1260,6 @@ class MdViewerApp(App):
         first detaches its inner `Image`, so the later `Image` sweep only sees
         standalone (Mermaid) images.
         """
-        doc = self.query_one(MarkdownViewer).document
         for widget_type in (_FrontmatterPanel, EventFlow, ZoomableImage, Image):
             for widget in list(doc.query(widget_type)):
                 await widget.remove()
@@ -1467,14 +1466,11 @@ class MdViewerApp(App):
             self._on_quick_open_picked,
         )
 
-    def _on_quick_open_picked(self, payload: object) -> None:
+    def _on_quick_open_picked(self, path: Path | None) -> None:
         # Esc/empty pick → None; otherwise navigate to the picked path (reopening
         # the current file is a no-op).
         self.set_focus(None)
-        if payload is None:
-            return
-        path = payload
-        if path == self._md_path:
+        if path is None or path == self._md_path:
             return
         self.run_worker(self._navigate_to(path, ""), exclusive=True)
 
@@ -1531,12 +1527,6 @@ class MdViewerApp(App):
 
     def action_prev_h2(self) -> None:
         self._jump_to(self._headings_at_level(2), direction=-1)
-
-    def action_next_section(self) -> None:
-        self._jump_to(self._all_headings(), direction=1)
-
-    def action_prev_section(self) -> None:
-        self._jump_to(self._all_headings(), direction=-1)
 
     def _all_headings(self) -> list[Widget]:
         return list(self.query_one(MarkdownViewer).document.query(MarkdownHeader))

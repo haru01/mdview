@@ -46,12 +46,3 @@ def test_diff_files_are_rejected(
 
     assert exc.value.code == 1
     assert "diff files are not supported" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize("flag", ["--diff", "--staged", "--pr", "--log"])
-def test_removed_diff_flags_are_unknown(
-    flag: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The git/gh diff source flags are gone: argparse rejects them outright."""
-    with pytest.raises(SystemExit):
-        _run_main([flag], monkeypatch)

@@ -5,8 +5,10 @@ import os
 import sys
 from pathlib import Path
 
-# Unified diffs are not a supported document type: the viewer renders Markdown.
-# Naming one explicitly is an error rather than a confusing wall of plain text.
+# Unified diffs are not a document type the viewer renders. Rejecting by *name*
+# only: content sniffing went with the diff viewer, so a diff under another name
+# (or piped in) still renders as Markdown. This catches the common mistake
+# cheaply — it is not meant to be exhaustive.
 _DIFF_SUFFIXES = frozenset({".diff", ".patch"})
 
 
@@ -15,18 +17,12 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="mdview",
         description="Readable TUI markdown viewer with SVG image rendering.",
     )
-    parser.add_argument(
-        "file", nargs="?", type=Path, help="markdown file path, or - for stdin"
-    )
+    parser.add_argument("file", type=Path, help="markdown file path, or - for stdin")
     return parser
 
 
 def main() -> None:
-    parser = _build_parser()
-    args = parser.parse_args()
-
-    if args.file is None:
-        parser.error("a file or - (stdin) is required")
+    args = _build_parser().parse_args()
 
     path: Path = args.file
     if str(path) == "-":

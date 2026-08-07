@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from mdview.filetree import VIEWABLE_SUFFIXES, initial_file, is_viewable
+from mdview.filetree import initial_file, is_viewable
 
 
 def test_is_viewable_accepts_markdown():

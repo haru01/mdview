@@ -37,8 +37,7 @@ BROKEN_LINK = "#6e6e6e"
 SEARCH_MATCH_BG = "#302b52"
 SEARCH_CURRENT_BG = "#4c3fa8"
 
-# AI edit-preview diff: line backgrounds stay semantically green/red; the `@@`
-# hunk header follows the accent instead of the old cyan.
+# AI edit-preview diff: line backgrounds stay semantically green/red. (The `@@`
+# hunk header just wears ACCENT directly — see diffview.HEADER_STYLE.)
 DIFF_ADD_BG = "#16331f"
 DIFF_DEL_BG = "#3a1d1d"
-DIFF_FILE_RULE = ACCENT
