@@ -8,7 +8,7 @@ from pathlib import Path
 
 from textual.widgets import MarkdownViewer
 
-from mdview.app import MdViewerApp, _WikiHoverPopup
+from mdview.app import MdViewerApp, _LinkHoverPopup
 from mdview.wiki import wikilink_action_target
 
 _FM_A = "---\ntitle: Note A\ntags: [alpha]\n---\n"
@@ -87,7 +87,7 @@ def test_hover_shows_preview_then_hides(tmp_path):
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
             await pilot.pause()
-            popup = app.query_one("#wiki-hover", _WikiHoverPopup)
+            popup = app.query_one("#link-hover", _LinkHoverPopup)
             assert popup.display is False
 
             app.on_mouse_move(_fake_move("app.wikilink('target-b','')"))
@@ -125,7 +125,7 @@ def test_hover_over_broken_link_shows_nothing(tmp_path):
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
             await pilot.pause()
-            popup = app.query_one("#wiki-hover", _WikiHoverPopup)
+            popup = app.query_one("#link-hover", _LinkHoverPopup)
             app.on_mouse_move(_fake_move("app.wikilink('missing-x','')"))
             await pilot.pause()
             assert popup.display is False
@@ -141,7 +141,7 @@ def test_hover_over_non_wikilink_shows_nothing(tmp_path):
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
             await pilot.pause()
-            popup = app.query_one("#wiki-hover", _WikiHoverPopup)
+            popup = app.query_one("#link-hover", _LinkHoverPopup)
             app.on_mouse_move(_fake_move("app.tag_files('alpha')"))
             await pilot.pause()
             assert popup.display is False

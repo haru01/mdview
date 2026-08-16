@@ -291,11 +291,12 @@ ProjectGrepScreen {
     margin: 1 0 0 0;
 }
 
-/* Wikilink hover preview: a floating peek shown while the mouse rests on a
- * [[wikilink]] (see _WikiHoverPopup / on_mouse_move). On the top _tooltips
- * layer, positioned at the cursor; `constrain` keeps it on-screen. Clamped +
- * overflow hidden — a peek of the note body (frontmatter stripped). */
-#wiki-hover {
+/* Link hover preview: a floating peek shown while the mouse rests on a link —
+ * a [[wikilink]] or an ordinary [text](target) (see _LinkHoverPopup /
+ * on_mouse_move). On the top _tooltips layer, positioned at the cursor;
+ * `constrain` keeps it on-screen. Clamped + overflow hidden — a peek of the
+ * target's body (frontmatter stripped), or the URL for an external link. */
+#link-hover {
     layer: _tooltips;
     display: none;
     width: auto;
