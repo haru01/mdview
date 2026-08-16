@@ -58,6 +58,7 @@ HELP_SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
         "リンク",
         [
             ("Backspace ←", "履歴を戻る"),
+            ("リンク hover", "マウスを当てるとリンク先をプレビュー"),
         ],
     ),
     (
